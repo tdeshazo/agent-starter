@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "Local Gemma 4 E4B agent using Strands and Vulkan llama.cpp"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["strands-agents[openai]>=1.0,<2"]
+dependencies = [
+    "prompt-toolkit>=3.0.52,<4",
+    "strands-agents[openai]>=1.0,<2",
+]
