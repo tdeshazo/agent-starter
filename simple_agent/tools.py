@@ -1,0 +1,18 @@
+"""Define application tools here and register them in DEFAULT_TOOLS."""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from strands import tool
+
+
+@tool
+def current_time(timezone: str = "UTC") -> str:
+    """Return the current time in an IANA timezone, such as America/New_York.
+
+    Args:
+        timezone: IANA timezone name.
+    """
+    return datetime.now(ZoneInfo(timezone)).isoformat()
+
+
+DEFAULT_TOOLS = (current_time,)

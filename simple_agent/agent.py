@@ -1,0 +1,30 @@
+"""Wire the local model, system prompt, and application tools together."""
+import os
+
+from strands import Agent
+from strands.models.openai import OpenAIModel
+
+from .prompts import SYSTEM_PROMPT
+from .tools import DEFAULT_TOOLS
+
+
+def create_agent() -> Agent:
+    """Create a fresh agent with its own conversation history."""
+    model = OpenAIModel(
+        client_args={
+            "base_url": os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8088/v1"),
+            "api_key": "local",
+            "timeout": 180.0,
+            "max_retries": 0,
+        },
+        model_id="gemma-4-e4b",
+        params={
+            "max_tokens": 2048,
+            "temperature": 0.2,
+            "extra_body": {
+                "cache_prompt": True,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        },
+    )
+    return Agent(model=model, tools=list(DEFAULT_TOOLS), system_prompt=SYSTEM_PROMPT)
