@@ -24,7 +24,8 @@ uv run python main.py 'Use current_time to tell me the time in America/New_York.
 uv run python main.py
 ```
 
-Use `/reset` to clear the conversation and `/quit` to exit. Stop the server with
+Use `/clear` to clear the conversation and `/exit` to exit. Press Esc during a
+response to stop it and return to the prompt. Stop the server with
 Ctrl-C in its terminal. Avoid running dictation inference simultaneously if GPU
 memory is limited; this process loads a separate copy of the weights.
 

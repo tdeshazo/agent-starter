@@ -2,7 +2,7 @@
 import argparse
 
 from simple_agent import create_agent
-from simple_agent.repl import USER_COLOR, USER_LABEL, ReplOutput, Turn, repl_input
+from simple_agent.repl import USER_COLOR, USER_LABEL, ReplOutput, Turn, repl_session
 
 
 def main():
@@ -15,8 +15,13 @@ def main():
         print()
         return
     output = ReplOutput(agent)
-    read_prompt = repl_input()
-    print("Gemma 4 E4B — /quit to exit, /reset to clear history, Alt+Enter for a newline.")
+    session = repl_session()
+    read_prompt = session.prompt if session is not None else input
+    terminal = session.app.input if session is not None else None
+    banner = "Gemma 4 E4B — /exit to exit, /clear to clear history, Alt+Enter for a newline."
+    if terminal is not None:
+        banner += " Esc stops a response."
+    print(banner)
     while True:
         try:
             entered = read_prompt()
@@ -29,13 +34,16 @@ def main():
         user_turn = Turn(USER_LABEL, USER_COLOR)
         user_turn.write(entered)
         user_turn.finish()
-        if prompt == "/quit":
+        if prompt == "/exit":
             break
-        if prompt == "/reset":
+        if prompt == "/clear":
             agent = create_agent()
             output = ReplOutput(agent)
         else:
-            output.respond(agent, prompt)
+            try:
+                output.respond(agent, prompt, terminal)
+            except KeyboardInterrupt:
+                break
             print()
 
 

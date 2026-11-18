@@ -1,4 +1,5 @@
 """Terminal input and output for the interactive agent."""
+import asyncio
 import os
 import re
 import shutil
@@ -6,7 +7,9 @@ import sys
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.input import Input
+from prompt_toolkit.key_binding import KeyBindings, KeyPress
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.utils import get_cwidth
 
 
@@ -14,6 +17,7 @@ USER_LABEL = "You>"
 USER_COLOR = "1;36"
 AGENT_COLOR = "1;35"
 TURN_TOKENS = re.compile(r"\n|[^\S\n]+|\S+")
+ESCAPE_TIMEOUT = 0.1
 
 
 def styled(text: str, color: str) -> str:
@@ -93,12 +97,64 @@ class ReplOutput:
         self.turn: Turn
         agent.callback_handler = self
 
-    def respond(self, agent, prompt: str) -> None:
+    def respond(self, agent, prompt: str, terminal: Input | None = None) -> None:
         self.turn = Turn(self.label, AGENT_COLOR)
+        stopped = False
         try:
-            agent(prompt)
+            if terminal is None:
+                agent(prompt)
+            else:
+                stopped = asyncio.run(self._respond_with_escape(agent, prompt, terminal))
         finally:
             self.turn.finish()
+        if stopped:
+            print("[Response stopped]", flush=True)
+
+    async def _respond_with_escape(self, agent, prompt: str, terminal: Input) -> bool:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        assert task is not None
+        history = agent.messages.copy()
+        flush = None
+        stop_key = None
+
+        def handle_keys(keys: list[KeyPress]) -> None:
+            nonlocal stop_key
+            if stop_key is not None:
+                return
+            for key in keys:
+                if key.key in (Keys.Escape, Keys.ControlC):
+                    stop_key = key.key
+                    task.cancel()
+                    break
+
+        def read_keys() -> None:
+            nonlocal flush
+            handle_keys(terminal.read_keys())
+            if flush is not None:
+                flush.cancel()
+            # Give the terminal time to finish a sequence beginning with Escape.
+            flush = loop.call_later(ESCAPE_TIMEOUT, flush_keys)
+
+        def flush_keys() -> None:
+            handle_keys(terminal.flush_keys())
+
+        with terminal.raw_mode(), terminal.attach(read_keys):
+            try:
+                await agent.invoke_async(prompt)
+            except asyncio.CancelledError:
+                if stop_key is None:
+                    raise
+                # An interrupted invocation may have appended only part of a turn.
+                agent.messages[:] = history
+                if stop_key == Keys.ControlC:
+                    raise KeyboardInterrupt from None
+                return True
+            finally:
+                if flush is not None:
+                    flush.cancel()
+                    terminal.flush_keys()
+        return False
 
     def __call__(self, **kwargs):
         for key in ("reasoningText", "data"):
@@ -112,9 +168,9 @@ class ReplOutput:
             self.turn.tool(f"Tool #{self.tool_count}:", tool_use["name"])
 
 
-def repl_input():
+def repl_session() -> PromptSession[str] | None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()) or os.getenv("TERM") == "dumb":
-        return input
+        return None
 
     bindings = KeyBindings()
 
@@ -122,11 +178,10 @@ def repl_input():
     def insert_newline(event):
         event.current_buffer.insert_text("\n")
 
-    session = PromptSession(
+    return PromptSession(
         ANSI(f"{styled(USER_LABEL, USER_COLOR)} "),
         prompt_continuation=" " * (len(USER_LABEL) + 1),
         erase_when_done=True,
         key_bindings=bindings,
         wrap_lines=False,
     )
-    return session.prompt
