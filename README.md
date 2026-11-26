@@ -1,6 +1,6 @@
 # Gemma 4 E4B + Strands
 
-A Python starter with an interactive CLI, `current_time` and `read_file` tools,
+A Python starter with an interactive CLI, tools for time, workspace search and file reads,
 and a local OpenAI-compatible llama.cpp server. Strands owns the agent/tool loop.
 No cloud API key is needed. Text only; no audio/vision projector is loaded.
 
@@ -23,6 +23,7 @@ In another terminal, wait for `curl -f http://127.0.0.1:8088/health` to succeed:
 ```sh
 uv run python main.py 'Use current_time to tell me the time in America/New_York.'
 uv run python main.py 'Read pyproject.toml and tell me which Python version it requires.'
+uv run python main.py 'Find the max_tokens setting in the agent code. Read the surrounding lines and cite the location.'
 uv run python main.py
 ```
 
@@ -106,10 +107,26 @@ Agent setup lives in the `simple_agent` package:
 Import the factory with `from simple_agent import create_agent`. Each call creates
 fresh conversation state. `main.py` selects the interface, and `simple_agent/tui/`
 handles interactive input and transcript rendering.
-Keep tool argument types and docstrings explicit. `read_file` accepts paths
-inside the current working directory (relative or absolute), reads UTF-8 text
-files up to 4 KiB, and blocks sensitive files such as `.env` and `.git/*`. The
-2048-token output limit is per inference, not a total agent-loop limit; add
+Keep tool argument types and docstrings explicit.
+
+- `search_text(query)` searches the current working directory recursively for a
+  case-sensitive, single-line literal. Each matching line includes its relative
+  path, 1-based line number and an excerpt. Results fit within 4 KiB and contain
+  at most 20 matches. Paths containing colons, quotes, backslashes or
+  nonprintable characters appear as JSON strings. Search skips symlinks,
+  binary files, files over 1 MiB,
+  and directories such as `.git`, `.venv`, `__pycache__` and `node_modules`.
+  A search can visit up to 10,000 entries, descend 32 levels, and read 32 MiB
+  across files. A partial result includes a `Search incomplete` notice.
+- `read_file(path)` reads an entire UTF-8 file up to 4 KiB. For a larger file
+  (up to 1 MiB), pass both `start_line` and `end_line` to read an inclusive
+  range, such as `read_file("simple_agent/agent.py", start_line=25, end_line=35)`.
+  The selected text must fit within 4 KiB.
+
+Both tools restrict access to the workspace and exclude `.git`, `.env` and
+`.env.*` files except `.env.example`, `.env.sample` and `.env.template`.
+
+The 2048-token output limit applies per inference. Add
 application-level limits before exposing more powerful tools. Long conversations
 can exhaust the configured context. Use `/clear` when needed.
 
