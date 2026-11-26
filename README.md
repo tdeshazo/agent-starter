@@ -24,10 +24,11 @@ uv run python main.py 'Use current_time to tell me the time in America/New_York.
 uv run python main.py
 ```
 
-Use `/clear` to clear the conversation and `/exit` to exit. Press Esc during a
-response to stop it and return to the prompt. Stop the server with
-Ctrl-C in its terminal. Avoid running dictation inference simultaneously if GPU
-memory is limited; this process loads a separate copy of the weights.
+The full-screen TUI supports Alt+Enter for a newline, Page Up and Page Down to
+scroll the transcript, and Esc to stop a response. Type `/` to see commands,
+including `/clear`, `/exit`, `/tools`, and `/status`. Piped input uses a
+line-oriented interface. Stop the server with Ctrl-C in its terminal. Avoid
+running dictation inference simultaneously if GPU memory is limited.
 
 ## Hardware settings
 
@@ -66,11 +67,12 @@ Agent setup lives in the `simple_agent` package:
 - `tools.py`: add functions decorated with `@tool` and register them in `DEFAULT_TOOLS`.
 
 Import the factory with `from simple_agent import create_agent`. Each call creates
-fresh conversation state. `main.py` handles only the CLI and conversation reset.
+fresh conversation state. `main.py` selects the interface, and `simple_agent/tui/`
+handles interactive input and transcript rendering.
 Keep tool argument types and docstrings explicit. The default tool
 only reads the clock. The 2048-token output limit is per inference, not a total
 agent-loop limit; add application-level limits before exposing more powerful tools.
-Long conversations can exhaust the 8K context; use `/reset` when needed.
+Long conversations can exhaust the 8K context. Use `/clear` when needed.
 
 Uses the official [Strands OpenAI provider](https://strandsagents.com/docs/user-guide/sdk/model-providers/openai/index.md).
 Native tool-call quality depends on the model and llama.cpp template; verify new
