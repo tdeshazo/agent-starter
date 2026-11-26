@@ -6,7 +6,8 @@ No cloud API key is needed. Text only; no audio/vision projector is loaded.
 
 ## Run
 
-Requires Python 3.12+, uv, Vulkan drivers and access to `/dev/dri`.
+Requires Python 3.12+ and uv. The default profile also requires Vulkan drivers
+and access to `/dev/dri`.
 By default, reuses these existing assets from `~/Workspace/dictation`:
 
 - `.local/runtime/llama-b12246/llama-server`
@@ -57,16 +58,42 @@ from dictation's `app/engine.py` and its documented configuration F:
 One inference slot, disabled reasoning, disabled request logs and no context shift
 match dictation. Jinja enables the model's tool-call chat template. Requests also
 explicitly disable thinking and enable prompt caching. These are inherited tuning
-choices, not new performance measurements. The launcher requires a Vulkan device
-and does not silently fall back to CPU.
+choices, not new performance measurements. The default profile requires a Vulkan
+device and does not silently fall back to CPU.
 
 Export overrides in the shell (no automatic `.env` loading). `DICTATION_ROOT`,
 `AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. `AGENT_PORT`
 updates both the server launcher and default client URL; set `AGENT_BASE_URL`
 to point the client at another host or endpoint.
 `python scripts/run_model.py --dry-run` prints the launch command without loading
-weights. Assets are never downloaded or modified on startup. On another machine,
-provision a Vulkan llama.cpp build with Gemma 4 support and E4B GGUF weights first.
+weights. Assets are never downloaded or modified on startup.
+
+### Intel UHD Graphics 620
+
+The i5-8350U and i5-8365U share these opt-in profiles. Use the CPU profile as a
+baseline and compare the Vulkan profile on long prompts.
+
+```sh
+uv run python scripts/run_model.py --profile uhd620-cpu
+uv run python scripts/run_model.py --profile uhd620-vulkan
+```
+
+Both profiles start with Gemma 4 E2B `Q4_0`, a 4096-token context, four CPU
+threads, one slot, `f16` KV cache, and automatic Flash Attention. They serve the
+model under the API alias `gemma-4-e4b` expected by the agent. Set `AGENT_MODEL`
+to an E4B GGUF to compare it on a host with more RAM.
+
+- `uhd620-cpu` uses `--device none` and zero GPU layers, regardless of
+  `AGENT_GPU_LAYERS`. A CPU-only llama.cpp build with Gemma 4 support works with
+  this profile.
+- `uhd620-vulkan` requires a Vulkan device and starts with eight GPU layers.
+  Set `AGENT_GPU_LAYERS` to `0` or `99` to compare with zero or full layer
+  offload. On a multi-GPU host, use `llama-server --list-devices` to identify
+  the Intel device and set `LLAMA_ARG_DEVICE` to its name. Host-memory preference
+  is enabled only if `GGML_VK_PREFER_HOST_MEMORY` is present in the environment.
+
+Use `AGENT_LLAMA_BIN` and `AGENT_MODEL` if the assets are installed elsewhere.
+Add `--dry-run` to inspect a profile before launching it.
 
 ## Extend
 
@@ -84,7 +111,7 @@ inside the current working directory (relative or absolute), reads UTF-8 text
 files up to 4 KiB, and blocks sensitive files such as `.env` and `.git/*`. The
 2048-token output limit is per inference, not a total agent-loop limit; add
 application-level limits before exposing more powerful tools. Long conversations
-can exhaust the 8K context. Use `/clear` when needed.
+can exhaust the configured context. Use `/clear` when needed.
 
 Uses the official [Strands OpenAI provider](https://strandsagents.com/docs/user-guide/sdk/model-providers/openai/index.md).
 Native tool-call quality depends on the model and llama.cpp template; verify new
