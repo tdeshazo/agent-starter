@@ -59,8 +59,9 @@ choices, not new performance measurements. The launcher requires a Vulkan device
 and does not silently fall back to CPU.
 
 Export overrides in the shell (no automatic `.env` loading). `DICTATION_ROOT`,
-`AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. Changing the port
-also requires `AGENT_BASE_URL=http://127.0.0.1:PORT/v1` for the client.
+`AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. `AGENT_PORT`
+updates both the server launcher and default client URL; set `AGENT_BASE_URL`
+to point the client at another host or endpoint.
 `python scripts/run_model.py --dry-run` prints the launch command without loading
 weights. Assets are never downloaded or modified on startup. On another machine,
 provision a Vulkan llama.cpp build with Gemma 4 support and E4B GGUF weights first.
@@ -76,11 +77,12 @@ Agent setup lives in the `simple_agent` package:
 Import the factory with `from simple_agent import create_agent`. Each call creates
 fresh conversation state. `main.py` selects the interface, and `simple_agent/tui/`
 handles interactive input and transcript rendering.
-Keep tool argument types and docstrings explicit. `read_file` accepts absolute
-paths and paths relative to the current working directory. It reads UTF-8 text
-files up to 4 KiB. The 2048-token output limit is per inference, not a total
-agent-loop limit; add application-level limits before exposing more powerful tools.
-Long conversations can exhaust the 8K context. Use `/clear` when needed.
+Keep tool argument types and docstrings explicit. `read_file` accepts paths
+inside the current working directory (relative or absolute), reads UTF-8 text
+files up to 4 KiB, and blocks sensitive files such as `.env` and `.git/*`. The
+2048-token output limit is per inference, not a total agent-loop limit; add
+application-level limits before exposing more powerful tools. Long conversations
+can exhaust the 8K context. Use `/clear` when needed.
 
 Uses the official [Strands OpenAI provider](https://strandsagents.com/docs/user-guide/sdk/model-providers/openai/index.md).
 Native tool-call quality depends on the model and llama.cpp template; verify new
@@ -90,5 +92,7 @@ tools against your own tasks before relying on them.
 
 ```sh
 uv run python -m unittest discover -s tests
+uv run simple-agent --help
 uv run python main.py --help
+uvx ruff check .
 ```

@@ -1,4 +1,5 @@
 """Wire the local model, system prompt, and application tools together."""
+from collections.abc import Mapping
 import os
 
 from strands import Agent
@@ -9,11 +10,20 @@ from .settings import DEFAULT_AGENT_NAME
 from .tools import DEFAULT_TOOLS
 
 
+def resolve_base_url(env: Mapping[str, str] | None = None) -> str:
+    """Resolve the OpenAI-compatible base URL from environment overrides."""
+    source = os.environ if env is None else env
+    if base_url := source.get("AGENT_BASE_URL"):
+        return base_url
+    port = source.get("AGENT_PORT") or "8088"
+    return f"http://127.0.0.1:{port}/v1"
+
+
 def create_agent() -> Agent:
     """Create a fresh agent with its own conversation history."""
     model = OpenAIModel(
         client_args={
-            "base_url": os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8088/v1"),
+            "base_url": resolve_base_url(),
             "api_key": "local",
             "timeout": 180.0,
             "max_retries": 0,

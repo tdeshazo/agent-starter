@@ -22,6 +22,22 @@ from .terminal import use_true_color
 INTERRUPTED = "Response stopped — tell the agent what to do differently."
 
 
+def format_invocation_error(error: Exception) -> str:
+    """Format a safe, user-facing description of a provider or runtime failure."""
+    status = getattr(error, "status_code", None)
+    cause = getattr(error, "__cause__", None)
+    name = type(error).__name__
+    if isinstance(error, TimeoutError) or name == "APITimeoutError":
+        message = "Provider timed out"
+    elif isinstance(status, int):
+        message = f"Provider request failed (HTTP {status})"
+    elif isinstance(error, ConnectionError) or isinstance(cause, ConnectionError) or name == "APIConnectionError":
+        message = "Could not connect to model server"
+    else:
+        message = "The response failed. Try again."
+    return f"{name}: {message}"
+
+
 class Transcript:
     """Turn agent events into history cells.
 
@@ -60,14 +76,7 @@ class Transcript:
 
     def invocation_failed(self, error: Exception) -> None:
         """Show a safe description while preserving the terminal session."""
-        status = getattr(error, "status_code", None)
-        if isinstance(error, TimeoutError):
-            message = "Provider timed out"
-        elif isinstance(status, int):
-            message = f"Provider request failed (HTTP {status})"
-        else:
-            message = "The response failed. Try again."
-        self.error(f"{type(error).__name__}: {message}")
+        self.error(format_invocation_error(error))
 
     def _write(self, kind: str, chunk: str) -> None:
         if self.stream is None or self.stream_kind != kind:

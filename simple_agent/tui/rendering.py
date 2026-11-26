@@ -1,6 +1,7 @@
 """Render terminal headers, transcript cells, and streamed text."""
 import json
 import re
+import unicodedata
 
 from prompt_toolkit.utils import get_cwidth
 
@@ -9,6 +10,7 @@ from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
 
 
 TOOL_RESULT_LINES = 3
+MAX_ESCAPE_BUFFER = 256
 
 BOLD = "1"
 DIM = "2"
@@ -18,11 +20,45 @@ BOLD_CYAN = "1;36"
 RED = "31"
 
 WORD = re.compile(r"([^\S\n]*)(\S+)")
+ANSI_ESCAPE = re.compile(
+    r"\x1b(?:"
+    r"\[[0-?]*[ -/]*[@-~]"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|[P^_][^\x1b]*\x1b\\"
+    r"|[@-Z\\-_]"
+    r")"
+    r"|\x9b[0-?]*[ -/]*[@-~]"
+)
+INCOMPLETE_ANSI = re.compile(
+    r"(?:\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*|[P^_][^\x1b]*)?|\x9b[0-?]*[ -/]*)\Z"
+)
 TOKEN_USAGE_FIELDS = (
     ("inputTokens", "in"),
     ("cacheReadInputTokens", "cached"),
     ("outputTokens", "out"),
 )
+
+
+def sanitize_text(text: str, *, multiline: bool = True) -> str:
+    """Strip terminal escape sequences and unsafe control characters from untrusted text."""
+    if not text:
+        return ""
+    cleaned = text.replace("\r\n", "\n")
+    if "\x1b" in cleaned or "\x9b" in cleaned:
+        cleaned = ANSI_ESCAPE.sub("", cleaned)
+    out: list[str] = []
+    for char in cleaned:
+        if char == "\n":
+            out.append("\n" if multiline else " ")
+        elif char == "\t":
+            out.append("\t" if multiline else " ")
+        else:
+            category = unicodedata.category(char)
+            if category in {"Zl", "Zp"}:
+                out.append("\n" if multiline else " ")
+            elif category != "Cc":
+                out.append(char)
+    return "".join(out)
 
 
 def sgr(text: str, codes: str, color: bool = True) -> str:
@@ -144,20 +180,27 @@ def session_box(
     agent_name: str = DEFAULT_AGENT_NAME,
 ) -> list[str]:
     """Render the bordered box listing the session's model, endpoint and directory."""
-    title = agent_name + (f" (v{app_version})" if app_version else "")
-    fields = [(name, value) for name, value in (
-        ("model:", model),
-        ("endpoint:", endpoint),
-        ("directory:", directory),
-    ) if value]
-    label_width = max(len(name) for name, _ in fields) + 1
-    plain = [title, ""] + [name.ljust(label_width) + value for name, value in fields]
+    safe_name = sanitize_text(agent_name, multiline=False) or DEFAULT_AGENT_NAME
+    safe_version = sanitize_text(app_version or "", multiline=False)
+    title = safe_name + (f" (v{safe_version})" if safe_version else "")
+    fields = [
+        (name, cleaned)
+        for name, value in (
+            ("model:", model),
+            ("endpoint:", endpoint),
+            ("directory:", directory),
+        )
+        if value and (cleaned := sanitize_text(value, multiline=False))
+    ]
+    label_width = max((len(name) for name, _ in fields), default=0) + 1
+    plain = [title] + ([""] + [name.ljust(label_width) + value for name, value in fields] if fields else [])
     inner = min(max(get_cwidth(line) for line in plain), max(width - 4, 10))
     plain = [truncate(line, inner) for line in plain]
 
     def styled_line(index: int, line: str) -> str:
         if index == 0:
-            return sgr(line[:len(agent_name)], BOLD, color) + sgr(line[len(agent_name):], DIM, color)
+            split = min(len(safe_name), len(line))
+            return sgr(line[:split], BOLD, color) + sgr(line[split:], DIM, color)
         if line:
             return sgr(line[:label_width], DIM, color) + line[label_width:]
         return line
@@ -174,7 +217,8 @@ def session_box(
 
 
 def user_cell(text: str, width: int, color: bool = True) -> list[str]:
-    rows = [row for line in text.strip("\n").split("\n") for row in wrap(line, width - 2)]
+    clean = sanitize_text(text)
+    rows = [row for line in clean.strip("\n").split("\n") for row in wrap(line, width - 2)]
     return _prefixed(rows, sgr("›", BOLD_CYAN, color) + " ", "  ")
 
 
@@ -183,7 +227,9 @@ def tool_call_rows(name: str, tool_input, width: int, color: bool = True, verb: 
         arguments = json.dumps(tool_input, ensure_ascii=False)
     except (TypeError, ValueError):
         arguments = str(tool_input)
-    rows = wrap(f"{verb} {name}({arguments})", width - 2)
+    safe_name = sanitize_text(str(name), multiline=False)
+    safe_arguments = sanitize_text(arguments, multiline=False)
+    rows = wrap(f"{verb} {safe_name}({safe_arguments})", width - 2)
     rows[0] = sgr(verb, BOLD, color) + rows[0][len(verb):]
     return _prefixed(rows, "• ", "  ")
 
@@ -192,11 +238,12 @@ def tool_result_rows(result: dict, width: int, color: bool = True) -> list[str]:
     parts = []
     for block in result.get("content", []):
         if "text" in block:
-            parts.append(str(block["text"]))
+            parts.append(sanitize_text(str(block["text"])))
         elif "json" in block:
-            parts.append(json.dumps(block["json"], ensure_ascii=False))
+            parts.append(sanitize_text(json.dumps(block["json"], ensure_ascii=False)))
         else:
-            parts.append(f"[{next(iter(block), 'content')}]")
+            kind = sanitize_text(str(next(iter(block), "content")), multiline=False)
+            parts.append(f"[{kind}]")
     lines = [line for line in "\n".join(parts).splitlines() if line.strip()] or ["(no output)"]
     shown = lines[:TOOL_RESULT_LINES]
     hidden = len(lines) - len(shown)
@@ -211,15 +258,18 @@ def tool_result_rows(result: dict, width: int, color: bool = True) -> list[str]:
 
 
 def error_cell(message: str, width: int, color: bool = True) -> list[str]:
+    clean = sanitize_text(message)
+    rows = [sgr(row, RED, color) for line in clean.split("\n") for row in wrap(line, width - 2)]
     return _prefixed(
-        [sgr(row, RED, color) for row in wrap(message, width - 2)],
+        rows,
         sgr("■", RED, color) + " ",
         "  ",
     )
 
 
 def info_cell(message: str, width: int, color: bool = True) -> list[str]:
-    rows = [sgr(row, DIM, color) for line in message.split("\n") for row in wrap(line, width - 2)]
+    clean = sanitize_text(message)
+    rows = [sgr(row, DIM, color) for line in clean.split("\n") for row in wrap(line, width - 2)]
     return _prefixed(rows, sgr("•", DIM, color) + " ", "  ")
 
 
@@ -246,6 +296,28 @@ def render_inline(row: str, state: tuple[bool, bool], color: bool = True) -> tup
     return "".join(out), (bold, code)
 
 
+def _fence_transition(
+    line: str, active: tuple[str, int] | None
+) -> tuple[bool, tuple[str, int] | None]:
+    """Check whether ``line`` opens or closes a CommonMark code fence."""
+    stripped = line.lstrip()
+    if active is None:
+        if stripped.startswith("```"):
+            count = len(stripped) - len(stripped.lstrip("`"))
+            if "`" not in stripped[count:]:
+                return True, ("`", count)
+        elif stripped.startswith("~~~"):
+            count = len(stripped) - len(stripped.lstrip("~"))
+            return True, ("~", count)
+        return False, None
+    char, min_len = active
+    if stripped.startswith(char * min_len):
+        count = len(stripped) - len(stripped.lstrip(char))
+        if not stripped[count:].strip():
+            return True, None
+    return False, active
+
+
 class StreamCell:
     """Wrap streamed text, committing rows once later text cannot change them."""
 
@@ -259,17 +331,23 @@ class StreamCell:
         self.committed = 0
         self.started = False
         self.blank_rows = 0
-        self.in_fence = False
+        self.fence: tuple[str, int] | None = None
         self.inline = (False, False)
+        self._pending_escape = ""
+
+    @property
+    def in_fence(self) -> bool:
+        return self.fence is not None
 
     def _style(self, line: str, row: str, commit: bool) -> str:
         if not self.markdown:
             return sgr(row, self.style, self.color)
-        stripped = line.lstrip()
-        if stripped.startswith("```"):
+        is_fence, _ = _fence_transition(line, self.fence)
+        if is_fence:
             return sgr(row, DIM, self.color)
-        if self.in_fence:
+        if self.fence is not None:
             return row
+        stripped = line.lstrip()
         if HEADING.match(stripped):
             return sgr(INLINE.sub("", HEADING.sub(r"\1", row)), BOLD, self.color)
         text, state = render_inline(row, self.inline, self.color)
@@ -294,13 +372,20 @@ class StreamCell:
         return out
 
     def _end_line(self, line: str) -> None:
-        if self.markdown and line.lstrip().startswith("```"):
-            self.in_fence = not self.in_fence
+        if self.markdown:
+            _, self.fence = _fence_transition(line, self.fence)
         self.inline = (False, False)
 
     def push(self, chunk: str) -> list[str]:
         """Add streamed text and return rows that are now final."""
-        *complete, self.line = (self.line + chunk).replace("\r", "").split("\n")
+        raw = self._pending_escape + chunk
+        self._pending_escape = ""
+        if "\x1b" in raw or "\x9b" in raw:
+            match = INCOMPLETE_ANSI.search(raw)
+            if match and len(raw) - match.start() <= MAX_ESCAPE_BUFFER:
+                self._pending_escape = raw[match.start() :]
+                raw = raw[: match.start()]
+        *complete, self.line = (self.line + sanitize_text(raw)).split("\n")
         rows = []
         for line in complete:
             rows.extend(self._rows(line, wrap(line, self.width)[self.committed :]))
@@ -320,11 +405,19 @@ class StreamCell:
         return blanks + [self._prefix() + self._style(self.line, row, commit=False)]
 
     def finish(self) -> list[str]:
-        rows = self._rows(self.line, wrap(self.line, self.width)[self.committed :])
+        rows = []
+        if self._pending_escape:
+            *complete, self.line = (self.line + sanitize_text(self._pending_escape)).split("\n")
+            self._pending_escape = ""
+            for line in complete:
+                rows.extend(self._rows(line, wrap(line, self.width)[self.committed :]))
+                self.committed = 0
+                self._end_line(line)
+        rows.extend(self._rows(self.line, wrap(self.line, self.width)[self.committed :]))
         self.line = ""
         self.committed = 0
         self.blank_rows = 0
-        self.in_fence = False
+        self.fence = None
         self.inline = (False, False)
         return rows
 

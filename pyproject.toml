@@ -8,3 +8,20 @@ dependencies = [
     "prompt-toolkit>=3.0.52,<4",
     "strands-agents[openai]>=1.0,<2",
 ]
+
+[project.scripts]
+simple-agent = "simple_agent.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["simple_agent*"]
+
+[tool.ruff]
+line-length = 108
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

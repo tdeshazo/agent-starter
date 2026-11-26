@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 
 from ..settings import apply_agent_settings
-from .commands import command_output, parse_pet_command
+from .commands import command_output, parse_slash_command
 from .pets import PET_NAMES, load_pet, normalize_pet, save_pet
 from .session import conversation_turn, session_info
 from .terminal import use_color, write_rows
@@ -39,38 +39,38 @@ def run_plain(
         prompt = entered.strip()
         if not prompt:
             continue
-        if prompt == "/exit":
-            break
-        if prompt == "/settings":
-            transcript.info("Open the full-screen interface to edit agent settings.")
-            continue
-        if prompt == "/clear":
-            agent = agent_factory()
-            apply_agent_settings(agent, config_path)
-            agent.callback_handler = transcript
-            transcript.info("Started a new conversation.")
-            continue
-        is_pet, pet_arg = parse_pet_command(prompt)
-        if is_pet:
-            if pet_arg is None:
-                choices = ", ".join(PET_NAMES)
-                transcript.info(f"Current pet: {pet}. Choose from: {choices} (use /pet <name>).")
-            else:
-                chosen = normalize_pet(pet_arg)
-                if chosen is None:
+        cmd = parse_slash_command(prompt, interactive=False)
+        if cmd is not None:
+            if cmd.error:
+                transcript.error(cmd.error)
+            elif cmd.name == "/exit":
+                break
+            elif cmd.name == "/settings":
+                transcript.info("Open the full-screen interface to edit agent settings.")
+            elif cmd.name == "/clear":
+                agent = agent_factory()
+                apply_agent_settings(agent, config_path)
+                agent.callback_handler = transcript
+                transcript.info("Started a new conversation.")
+            elif cmd.name == "/pet":
+                if cmd.arg is None:
                     choices = ", ".join(PET_NAMES)
-                    transcript.error(f"Unknown pet {pet_arg!r}. Choose from: {choices}.")
+                    transcript.info(f"Current pet: {pet}. Choose from: {choices} (use /pet <name>).")
                 else:
-                    try:
-                        save_pet(chosen, config_path)
-                    except OSError as error:
-                        transcript.error(f"Could not save pet preference: {error}")
+                    chosen = normalize_pet(cmd.arg)
+                    if chosen is None:
+                        choices = ", ".join(PET_NAMES)
+                        transcript.error(f"Unknown pet {cmd.arg!r}. Choose from: {choices}.")
                     else:
-                        pet = chosen
-                        transcript.info(f"Selected pet: {chosen}.")
-            continue
-        if result := command_output(prompt, agent):
-            transcript.info(result)
+                        try:
+                            save_pet(chosen, config_path)
+                        except OSError as error:
+                            transcript.error(f"Could not save pet preference: {error}")
+                        else:
+                            pet = chosen
+                            transcript.info(f"Selected pet: {chosen}.")
+            elif result := command_output(cmd.name, agent):
+                transcript.info(result)
             continue
         transcript.user(entered)
         started = time.monotonic()

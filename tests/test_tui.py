@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.formatted_text import ANSI, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -18,15 +19,20 @@ from simple_agent.tui import (
     DEFAULT_PET,
     PET_NAMES,
     AgentTui,
+    StreamCell,
     Transcript,
     header_cell,
     load_pet,
     pet_rows,
     run_plain,
+    sanitize_text,
     save_pet,
+    session_info,
 )
 from simple_agent.tui.app import matching_commands
 from simple_agent.tui.pets import PETS, settings_path
+from simple_agent.tui.rendering import BOLD, DIM, session_box
+from simple_agent.tui.session import total_tokens
 
 
 class PetTests(unittest.TestCase):
@@ -154,6 +160,40 @@ class PlainModePetTests(unittest.TestCase):
             self.assertIn("Selected pet: rabbit.", rendered)
             self.assertEqual(load_pet(config), "rabbit")
 
+    def test_plain_mode_handles_prefix_and_unknown_slash_commands_locally(self):
+        invoked = []
+
+        class StubAgent:
+            def __init__(self):
+                self.messages = []
+                self.name = "Simple Agent"
+
+            def __call__(self, prompt):
+                invoked.append(prompt)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            inputs = iter(["/help", "/clear extra", "/pet ax", "/st", "/etc/hosts explain this", "/ex"])
+            output = io.StringIO()
+            with redirect_stdout(output):
+                run_plain(StubAgent, read=lambda: next(inputs), config_path=config)
+
+            rendered = output.getvalue()
+            self.assertIn("Unknown command /help. Available commands:", rendered)
+            self.assertIn("Command /clear does not take arguments.", rendered)
+            self.assertIn("Selected pet: axolotl.", rendered)
+            self.assertIn("Provider:", rendered)
+            self.assertEqual(invoked, ["/etc/hosts explain this"])
+            self.assertEqual(load_pet(config), "axolotl")
+
+
+class PackageMetadataTests(unittest.TestCase):
+    def test_session_info_reports_installed_package_version(self):
+        info = session_info(SimpleNamespace(messages=[]))
+        self.assertEqual(info["app_version"], "0.1.0")
+        header = "\n".join(header_cell(**info, width=80, color=False))
+        self.assertIn("Simple Agent (v0.1.0)", header)
+
 
 class TranscriptTests(unittest.TestCase):
     def test_wraps_streamed_words_and_indents_explicit_lines(self):
@@ -183,6 +223,114 @@ class TranscriptTests(unittest.TestCase):
             "", "• Checking", "", "• Called current_time({})", "  └ 12:00", "", "• Done.", "",
         ])
         self.assertTrue(rows[-1].startswith("─ Worked for 1s "))
+
+    def test_strips_ansi_and_osc_escapes_across_cells_and_split_stream_chunks(self):
+        self.assertEqual(
+            sanitize_text("ok\x1b[31mRED\x1b[0m\x1b]52;c;aGVsbG8=\x07\rspoof\x08!"),
+            "okREDspoof!",
+        )
+        rows = []
+        transcript = Transcript(rows.extend, lambda: 80, color=False)
+        transcript.user("hi \x1b[32mgreen\x1b[0m")
+        transcript(data="Hello \x1b")
+        self.assertEqual(transcript.tail(), ["• Hello"])
+        transcript(data="[31mWorld\x1b[0m and \x1b]52;c;ZXY=")
+        transcript(data="aWw=\x07done")
+        transcript(message={"content": [{"toolUse": {
+            "toolUseId": "1", "name": "read\x1b[31m_file", "input": {"path": "a\x9b31mb.txt"},
+        }}]})
+        transcript(message={"content": [{"toolResult": {
+            "toolUseId": "1",
+            "status": "success",
+            "content": [{"text": "safe\x1b]0;pwned\x07\r\n\x1b[2Jline2"}],
+        }}]})
+        transcript.end_turn(1)
+
+        joined = "\n".join(rows)
+        self.assertNotIn("\x1b", joined)
+        self.assertNotIn("\x9b", joined)
+        self.assertNotIn("\x07", joined)
+        self.assertIn("› hi green", joined)
+        self.assertIn("• Hello World and done", joined)
+        self.assertIn("• Called read_file(", joined)
+        self.assertIn("  └ safe", joined)
+        self.assertIn("    line2", joined)
+
+    def test_markdown_fences_handle_nested_backticks_tildes_and_inline_spans(self):
+        cell = StreamCell(width=80, bullet="•", color=True, markdown=True)
+        rows = cell.push(
+            "````markdown\n"
+            "```python\n"
+            "**still literal**\n"
+            "```\n"
+            "````\n"
+            "~~~sh\n"
+            "**also literal**\n"
+            "~~~\n"
+            "```inline``` **bold**\n"
+        )
+        rows.extend(cell.finish())
+        joined = "\n".join(rows)
+        self.assertIn("  **still literal**", joined)
+        self.assertIn("  **also literal**", joined)
+        self.assertIn(f"\x1b[{BOLD}mbold\x1b[0m", joined)
+        self.assertIn(f"\x1b[{DIM}m````markdown\x1b[0m", joined)
+        self.assertIn(f"\x1b[{DIM}m~~~sh\x1b[0m", joined)
+
+    def test_session_box_empty_fields_and_transcript_errors_and_usage(self):
+        box = session_box(None, None, "", "0.1.0", width=80, color=False)
+        self.assertEqual(len(box), 3)
+        self.assertIn("Simple Agent (v0.1.0)", box[1])
+
+        rows = []
+        transcript = Transcript(rows.extend, lambda: 80, color=False)
+
+        class APITimeoutError(Exception):
+            pass
+
+        class APIConnectionError(Exception):
+            pass
+
+        class HttpError(Exception):
+            status_code = 502
+
+        transcript.invocation_failed(TimeoutError())
+        transcript.invocation_failed(APITimeoutError())
+        transcript.invocation_failed(APIConnectionError())
+        transcript.invocation_failed(HttpError())
+        transcript.invocation_failed(RuntimeError("internal detail"))
+
+        # Zero default usage from Strands should be ignored; real usage should sum.
+        transcript(message={"metadata": {"usage": {"inputTokens": 0, "outputTokens": 0}}})
+        transcript.end_turn(0.5)
+        self.assertNotIn("in 0", "\n".join(rows))
+
+        transcript(
+            message={
+                "metadata": {
+                    "usage": {
+                        "inputTokens": 1200,
+                        "cacheReadInputTokens": 400,
+                        "outputTokens": 85,
+                    }
+                }
+            }
+        )
+        transcript.end_turn(0.5)
+        joined = "\n".join(rows)
+        self.assertIn("TimeoutError: Provider timed out", joined)
+        self.assertIn("APITimeoutError: Provider timed out", joined)
+        self.assertIn("APIConnectionError: Could not connect to model server", joined)
+        self.assertIn("HttpError: Provider request failed (HTTP 502)", joined)
+        self.assertIn("RuntimeError: The response failed. Try again.", joined)
+        self.assertNotIn("internal detail", joined)
+        self.assertIn("in 1.2K · cached 400 · out 85", joined)
+
+        agent = SimpleNamespace(
+            event_loop_metrics=SimpleNamespace(accumulated_usage={"totalTokens": 1685})
+        )
+        self.assertEqual(total_tokens(agent), 1685)
+        self.assertEqual(total_tokens(SimpleNamespace()), 0)
 
 
 class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
@@ -372,3 +520,77 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.gather(app2, return_exceptions=True)
 
             self.assertEqual(load_pet(config), "cat")
+
+    async def test_tui_rejects_unknown_commands_and_extra_command_args_without_invoking_agent(self):
+        invoked = []
+
+        async def invoke(prompt):
+            invoked.append(prompt)
+
+        agent = SimpleNamespace(messages=[], invoke_async=invoke)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            with create_pipe_input() as terminal:
+                tui = AgentTui(
+                    lambda: agent,
+                    input=terminal,
+                    output=DummyOutput(),
+                    color=False,
+                    config_path=config,
+                )
+                app = asyncio.create_task(tui.run_async())
+                try:
+                    terminal.send_text("/unknown\r/status extra\r/ex\r")
+                    await asyncio.wait_for(app, timeout=2)
+                finally:
+                    if not app.done():
+                        app.cancel()
+                        await asyncio.gather(app, return_exceptions=True)
+
+        self.assertEqual(invoked, [])
+        transcript = "\n".join(tui._history.rows)
+        self.assertIn("Unknown command /unknown. Type / to see available commands.", transcript)
+        self.assertIn("Command /status does not take arguments.", transcript)
+
+    async def test_header_reflows_automatically_when_terminal_width_changes(self):
+        class ResizableOutput(DummyOutput):
+            def __init__(self, columns: int):
+                self.columns = columns
+
+            def get_size(self) -> Size:
+                return Size(rows=24, columns=self.columns)
+
+        output = ResizableOutput(columns=45)
+        agent = SimpleNamespace(messages=[], invoke_async=lambda _p: asyncio.sleep(0))
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            save_pet("cat", config)
+            with create_pipe_input() as terminal:
+                tui = AgentTui(
+                    lambda: agent,
+                    input=terminal,
+                    output=output,
+                    color=False,
+                    config_path=config,
+                )
+                app = asyncio.create_task(tui.run_async())
+                try:
+                    await asyncio.sleep(0.05)
+                    self.assertTrue(tui._history.rows[0].startswith("╭"))
+
+                    output.columns = 80
+                    tui._history.create_content(width=80, height=20)
+                    self.assertTrue(
+                        tui._history.rows[0].startswith(pet_rows("cat", color=False)[0])
+                    )
+
+                    output.columns = 45
+                    tui._history.create_content(width=45, height=20)
+                    self.assertTrue(tui._history.rows[0].startswith("╭"))
+
+                    terminal.send_text("/exit\r")
+                    await asyncio.wait_for(app, timeout=2)
+                finally:
+                    if not app.done():
+                        app.cancel()
+                        await asyncio.gather(app, return_exceptions=True)

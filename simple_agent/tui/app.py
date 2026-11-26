@@ -1,7 +1,6 @@
 """Run the full-screen transcript, composer, and interactive turn lifecycle."""
 import asyncio
 from pathlib import Path
-import re
 import time
 from collections.abc import Callable
 from functools import cache
@@ -33,7 +32,7 @@ from prompt_toolkit.styles import Style
 
 from ..prompts import SYSTEM_PROMPT
 from ..settings import DEFAULT_AGENT_NAME, apply_agent_settings, normalize_agent_name, save_settings
-from .commands import COMMANDS, command_output, parse_pet_command
+from .commands import COMMANDS, command_output, matching_commands, parse_slash_command
 from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
 from .session import conversation_turn, session_info, total_tokens
@@ -46,26 +45,22 @@ ESCAPE_TIMEOUT = 0.1
 FRAME_INTERVAL = 0.08
 
 
-def matching_commands(text: str) -> list[str]:
-    if not text.startswith("/"):
-        return []
-    if text.startswith("/pet "):
-        arg = re.sub(r"[\s_]+", "-", text[5:].strip().lower())
-        return [f"/pet {name}" for name in PET_NAMES if name.startswith(arg)]
-    if any(char.isspace() for char in text):
-        return []
-    return [command for command in COMMANDS if command.startswith(text)]
-
-
 class TranscriptControl(UIControl):
     """Provide the transcript to prompt-toolkit, formatting rows as it reads them."""
 
-    def __init__(self, tail: Callable[[], list[str]]):
+    def __init__(
+        self,
+        tail: Callable[[], list[str]],
+        on_width_change: Callable[[int], None] | None = None,
+    ):
         self.rows: list[str] = []
         self.tail = tail
+        self.on_width_change = on_width_change
         self.first_line: int | None = None
 
     def create_content(self, width: int, height: int | None) -> UIContent:
+        if self.on_width_change is not None:
+            self.on_width_change(width)
         committed = len(self.rows)
         tail = self.tail()
         count = committed + len(tail)
@@ -104,13 +99,14 @@ class AgentTui:
         self.config_path = config_path
         self.pet = load_pet(self.config_path)
         self._header_len = 0
+        self._header_width = 0
         self._pet_picker_index: int | None = None
         self._editing_settings = False
         self._settings_error = ""
         self._name_buffer = Buffer(multiline=False)
         self._system_prompt_buffer = Buffer(multiline=True)
         self.transcript = Transcript(self._emit, self._width, self.color)
-        self._history = TranscriptControl(self.transcript.tail)
+        self._history = TranscriptControl(self.transcript.tail, on_width_change=self._sync_width)
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
         self.agent = None
         self._set_agent(agent if agent is not None else agent_factory())
@@ -215,11 +211,12 @@ class AgentTui:
         self._refresh_header()
         self.transcript.info("Agent settings saved.")
 
-    def _refresh_header(self) -> None:
+    def _refresh_header(self, width: int | None = None, *, invalidate: bool = True) -> None:
         if self._header_len <= 0 or len(self._history.rows) < self._header_len:
             return
+        target_width = self._width() if width is None else width
         rows = header_cell(
-            width=self._width(),
+            width=target_width,
             color=self.color,
             true_color=use_true_color(),
             pet=self.pet,
@@ -227,7 +224,13 @@ class AgentTui:
         )
         self._history.rows[: self._header_len] = rows
         self._header_len = len(rows)
-        self.app.invalidate()
+        self._header_width = target_width
+        if invalidate:
+            self.app.invalidate()
+
+    def _sync_width(self, width: int) -> None:
+        if width != self._header_width and self._header_len > 0:
+            self._refresh_header(width=width, invalidate=False)
 
     # Layout
 
@@ -522,36 +525,34 @@ class AgentTui:
         prompt = entered.strip()
         if not prompt:
             return
-        matches = matching_commands(prompt)
-        if prompt.startswith("/") and prompt not in COMMANDS and len(matches) == 1:
-            prompt = matches[0]
         self.buffer.append_to_history()
         self.buffer.reset()
         self._history.first_line = None
-        is_pet, pet_arg = parse_pet_command(prompt)
-        if prompt == "/exit":
-            self.app.exit()
-        elif prompt == "/clear":
-            self._set_agent(self.agent_factory())
-            self._refresh_header()
-            self.transcript.info("Started a new conversation.")
-        elif prompt == "/settings":
-            self._open_settings()
-        elif is_pet:
-            if pet_arg is None:
-                self._open_pet_picker()
-            else:
-                self._select_pet(pet_arg)
-        elif result := command_output(prompt, self.agent):
-            self.transcript.info(result)
-        elif prompt.startswith("/") and not any(char.isspace() for char in prompt):
-            self.transcript.error(f"Unknown command {prompt}. Type / to see available commands.")
-        else:
-            self.transcript.user(entered)
-            self.turn_started = time.monotonic()
-            self.stop_requested = False
-            self.task = self.app.create_background_task(self._respond(prompt))
-            self.app.create_background_task(self._animate())
+        cmd = parse_slash_command(prompt, interactive=True)
+        if cmd is not None:
+            if cmd.error:
+                self.transcript.error(cmd.error)
+            elif cmd.name == "/exit":
+                self.app.exit()
+            elif cmd.name == "/clear":
+                self._set_agent(self.agent_factory())
+                self._refresh_header()
+                self.transcript.info("Started a new conversation.")
+            elif cmd.name == "/settings":
+                self._open_settings()
+            elif cmd.name == "/pet":
+                if cmd.arg is None:
+                    self._open_pet_picker()
+                else:
+                    self._select_pet(cmd.arg)
+            elif result := command_output(cmd.name, self.agent):
+                self.transcript.info(result)
+            return
+        self.transcript.user(entered)
+        self.turn_started = time.monotonic()
+        self.stop_requested = False
+        self.task = self.app.create_background_task(self._respond(prompt))
+        self.app.create_background_task(self._animate())
 
     def interrupt(self) -> None:
         if self.running:
@@ -583,6 +584,7 @@ class AgentTui:
 
     def _header(self) -> None:
         start = len(self._history.rows)
+        self._header_width = self._width()
         self.transcript.header(pet=self.pet, **session_info(self.agent))
         self._header_len = len(self._history.rows) - start
 
