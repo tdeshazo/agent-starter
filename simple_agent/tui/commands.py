@@ -2,15 +2,25 @@
 
 from strands.models.openai import OpenAIModel
 
+from .pets import PET_NAMES
 from .session import session_model_id
 
 
 COMMANDS = {
     "/clear": "start a new conversation with empty history",
     "/exit": "exit the agent",
+    "/pet": f"choose a companion pet ({len(PET_NAMES)} available)",
     "/tools": "list the registered tools",
     "/status": "show the active provider and model ID",
 }
+
+
+def parse_pet_command(prompt: str) -> tuple[bool, str | None]:
+    """Parse ``/pet`` or ``/pet <name>`` into ``(is_pet_command, arg)``."""
+    parts = prompt.split(None, 1)
+    if not parts or parts[0] != "/pet":
+        return False, None
+    return True, parts[1].strip() if len(parts) > 1 else None
 
 
 def command_output(prompt: str, agent) -> str | None:

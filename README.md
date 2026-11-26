@@ -1,8 +1,8 @@
 # Gemma 4 E4B + Strands
 
-A Python starter with an interactive CLI, a `current_time` example tool, and a local
-OpenAI-compatible llama.cpp server. Strands owns the agent/tool loop. No cloud API
-key is needed. Text only; no audio/vision projector is loaded.
+A Python starter with an interactive CLI, `current_time` and `read_file` tools,
+and a local OpenAI-compatible llama.cpp server. Strands owns the agent/tool loop.
+No cloud API key is needed. Text only; no audio/vision projector is loaded.
 
 ## Run
 
@@ -21,12 +21,13 @@ In another terminal, wait for `curl -f http://127.0.0.1:8088/health` to succeed:
 
 ```sh
 uv run python main.py 'Use current_time to tell me the time in America/New_York.'
+uv run python main.py 'Read pyproject.toml and tell me which Python version it requires.'
 uv run python main.py
 ```
 
 The full-screen TUI supports Alt+Enter for a newline, Page Up and Page Down to
 scroll the transcript, and Esc to stop a response. Type `/` to see commands,
-including `/clear`, `/exit`, `/tools`, and `/status`. Piped input uses a
+including `/clear`, `/exit`, `/pet`, `/tools`, and `/status`. Piped input uses a
 line-oriented interface. Stop the server with Ctrl-C in its terminal. Avoid
 running dictation inference simultaneously if GPU memory is limited.
 
@@ -69,8 +70,9 @@ Agent setup lives in the `simple_agent` package:
 Import the factory with `from simple_agent import create_agent`. Each call creates
 fresh conversation state. `main.py` selects the interface, and `simple_agent/tui/`
 handles interactive input and transcript rendering.
-Keep tool argument types and docstrings explicit. The default tool
-only reads the clock. The 2048-token output limit is per inference, not a total
+Keep tool argument types and docstrings explicit. `read_file` accepts absolute
+paths and paths relative to the current working directory. It reads UTF-8 text
+files up to 4 KiB. The 2048-token output limit is per inference, not a total
 agent-loop limit; add application-level limits before exposing more powerful tools.
 Long conversations can exhaust the 8K context. Use `/clear` when needed.
 

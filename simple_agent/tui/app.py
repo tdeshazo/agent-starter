@@ -1,5 +1,7 @@
 """Run the full-screen transcript, composer, and interactive turn lifecycle."""
 import asyncio
+from pathlib import Path
+import re
 import time
 from collections.abc import Callable
 from functools import cache
@@ -28,10 +30,11 @@ from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.output import Output
 from prompt_toolkit.styles import Style
 
-from .commands import COMMANDS, command_output
-from .rendering import BOLD_CYAN, DIM, format_elapsed, format_tokens, sgr, shimmer
+from .commands import COMMANDS, command_output, parse_pet_command
+from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
+from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
 from .session import conversation_turn, session_info, total_tokens
-from .terminal import use_color
+from .terminal import use_color, use_true_color
 from .transcript import Transcript
 
 
@@ -41,7 +44,12 @@ FRAME_INTERVAL = 0.08
 
 
 def matching_commands(text: str) -> list[str]:
-    if not text.startswith("/") or any(char.isspace() for char in text):
+    if not text.startswith("/"):
+        return []
+    if text.startswith("/pet "):
+        arg = re.sub(r"[\s_]+", "-", text[5:].strip().lower())
+        return [f"/pet {name}" for name in PET_NAMES if name.startswith(arg)]
+    if any(char.isspace() for char in text):
         return []
     return [command for command in COMMANDS if command.startswith(text)]
 
@@ -86,9 +94,14 @@ class AgentTui:
         input: Input | None = None,
         output: Output | None = None,
         color: bool | None = None,
+        config_path: Path | None = None,
     ):
         self.agent_factory = agent_factory
         self.color = use_color() if color is None else color
+        self.config_path = config_path
+        self.pet = load_pet(self.config_path)
+        self._header_len = 0
+        self._pet_picker_index: int | None = None
         self.transcript = Transcript(self._emit, self._width, self.color)
         self._history = TranscriptControl(self.transcript.tail)
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
@@ -128,6 +141,53 @@ class AgentTui:
         self._history.rows.extend(lines)
         self.app.invalidate()
 
+    # Pet selection
+
+    def _open_pet_picker(self) -> None:
+        self._pet_picker_index = PET_NAMES.index(self.pet)
+        self.app.layout.focus(self._picker_window)
+        self.app.invalidate()
+
+    def _close_pet_picker(self) -> None:
+        self._pet_picker_index = None
+        self.app.layout.focus(self._composer)
+        self.app.invalidate()
+
+    def _move_pet_picker(self, delta: int) -> None:
+        if self._pet_picker_index is None:
+            return
+        self._pet_picker_index = (self._pet_picker_index + delta) % len(PET_NAMES)
+        self.app.invalidate()
+
+    def _select_pet(self, name: str) -> None:
+        canonical = normalize_pet(name)
+        if canonical is None:
+            choices = ", ".join(PET_NAMES)
+            self.transcript.error(f"Unknown pet {name!r}. Choose from: {choices}.")
+            return
+        try:
+            save_pet(canonical, self.config_path)
+        except OSError as error:
+            self.transcript.error(f"Could not save pet preference: {error}")
+            return
+        self.pet = canonical
+        self._refresh_header()
+        self.transcript.info(f"Selected pet: {canonical}.")
+
+    def _refresh_header(self) -> None:
+        if self._header_len <= 0 or len(self._history.rows) < self._header_len:
+            return
+        rows = header_cell(
+            width=self._width(),
+            color=self.color,
+            true_color=use_true_color(),
+            pet=self.pet,
+            **session_info(self.agent),
+        )
+        self._history.rows[: self._header_len] = rows
+        self._header_len = len(rows)
+        self.app.invalidate()
+
     # Layout
 
     def _layout(self) -> Layout:
@@ -139,10 +199,14 @@ class AgentTui:
                 return [("class:prompt", "› ")]
             return [("", "  ")]
 
-        has_commands = Condition(lambda: bool(matching_commands(self.buffer.text)))
+        in_picker = Condition(lambda: self._pet_picker_index is not None)
+        not_in_picker = Condition(lambda: self._pet_picker_index is None)
+        has_commands = Condition(
+            lambda: self._pet_picker_index is None and bool(matching_commands(self.buffer.text))
+        )
         is_empty = Condition(lambda: not self.buffer.text)
 
-        composer = Window(
+        self._composer = Window(
             BufferControl(
                 self.buffer,
                 input_processors=[
@@ -153,6 +217,10 @@ class AgentTui:
             wrap_lines=True,
             dont_extend_height=True,
             height=Dimension(min=1, max=12),
+        )
+        self._picker_window = Window(
+            FormattedTextControl(lambda: ansi(self._pet_picker_rows()), focusable=True),
+            dont_extend_height=True,
         )
         footer = VSplit([
             Window(FormattedTextControl(lambda: ansi([self._footer_hints()])), height=1),
@@ -170,15 +238,16 @@ class AgentTui:
                     Condition(lambda: self.running),
                 ),
                 Window(height=Dimension(preferred=1, max=1)),
-                composer,
+                ConditionalContainer(self._composer, not_in_picker),
                 ConditionalContainer(
                     Window(FormattedTextControl(lambda: ansi(self._command_rows())), dont_extend_height=True),
                     has_commands,
                 ),
+                ConditionalContainer(self._picker_window, in_picker),
                 Window(height=Dimension(preferred=1, max=1)),
                 footer,
             ]),
-            focused_element=composer,
+            focused_element=self._composer,
         )
 
     def _status_line(self) -> str:
@@ -189,19 +258,72 @@ class AgentTui:
             + sgr(f" ({elapsed} • esc to interrupt)", DIM, self.color)
         )
 
+    def _command_description(self, command: str) -> str:
+        if command in COMMANDS:
+            return COMMANDS[command]
+        if command.startswith("/pet "):
+            name = command.removeprefix("/pet ")
+            pet = PETS.get(name)
+            if pet is not None:
+                suffix = " (current)" if name == self.pet else ""
+                return pet.description + suffix
+        return ""
+
     def _command_rows(self) -> list[str]:
         matches = matching_commands(self.buffer.text)
+        if not matches:
+            return []
+        label_width = max(10, max(len(command) for command in matches) + 2)
         rows = []
         for index, command in enumerate(matches):
-            label = command.ljust(10)
+            label = command.ljust(label_width)
+            description = self._command_description(command)
             if index == 0:
-                rows.append("  " + sgr(label, BOLD_CYAN, self.color) + COMMANDS[command])
+                rows.append("  " + sgr(label, BOLD_CYAN, self.color) + description)
             else:
-                rows.append("  " + label + sgr(COMMANDS[command], DIM, self.color))
+                rows.append("  " + label + sgr(description, DIM, self.color))
+        return rows
+
+    def _pet_picker_rows(self) -> list[str]:
+        if self._pet_picker_index is None:
+            return []
+        selected_name = PET_NAMES[self._pet_picker_index]
+        left: list[tuple[str, str]] = [
+            ("  Choose a pet", "  " + sgr("Choose a pet", BOLD, self.color)),
+            ("", ""),
+        ]
+        for index, name in enumerate(PET_NAMES):
+            pet = PETS[name]
+            marker = "› " if index == self._pet_picker_index else "  "
+            badge = " (current)" if name == self.pet else ""
+            plain = f"  {marker}{pet.label}{badge}"
+            if index == self._pet_picker_index:
+                styled = "  " + sgr(marker + pet.label, BOLD_CYAN, self.color) + sgr(badge, DIM, self.color)
+            else:
+                styled = "  " + marker + pet.label + sgr(badge, DIM, self.color)
+            left.append((plain, styled))
+        description = PETS[selected_name].description
+        desc_line = "  " + sgr(description, DIM, self.color)
+
+        art = pet_rows(selected_name, self.color, true_color=use_true_color())
+        col_width = max(len(plain) for plain, _ in left) + 4
+        if self._width() < col_width + pet_width(selected_name):
+            return [styled for _, styled in left] + ["", desc_line]
+        height = max(len(left), len(art))
+        left += [("", "")] * (height - len(left))
+        top_pad = (height - len(art)) // 2
+        art = [""] * top_pad + art + [""] * (height - len(art) - top_pad)
+        rows = [
+            (styled + " " * (col_width - len(plain)) + art_line).rstrip()
+            for (plain, styled), art_line in zip(left, art)
+        ]
+        rows.extend(["", desc_line])
         return rows
 
     def _footer_hints(self) -> str:
-        if self.running:
+        if self._pet_picker_index is not None:
+            hints = ["↑/↓ choose", "⏎ select", "esc cancel"]
+        elif self.running:
             hints = ["esc interrupt", "⌃C interrupt"]
         elif matching_commands(self.buffer.text):
             hints = ["tab complete", "⏎ run"]
@@ -234,6 +356,8 @@ class AgentTui:
 
     def _bindings(self) -> KeyBindings:
         bindings = KeyBindings()
+        in_picker = Condition(lambda: self._pet_picker_index is not None)
+        not_in_picker = Condition(lambda: self._pet_picker_index is None)
 
         @bindings.add("pageup")
         def page_up(event):
@@ -243,16 +367,40 @@ class AgentTui:
         def page_down(event):
             self._scroll_history(1)
 
-        @bindings.add("enter")
+        @bindings.add("up", filter=in_picker)
+        @bindings.add("left", filter=in_picker)
+        @bindings.add("k", filter=in_picker)
+        def picker_prev(event):
+            self._move_pet_picker(-1)
+
+        @bindings.add("down", filter=in_picker)
+        @bindings.add("right", filter=in_picker)
+        @bindings.add("j", filter=in_picker)
+        @bindings.add("tab", filter=in_picker)
+        def picker_next(event):
+            self._move_pet_picker(1)
+
+        @bindings.add("enter", filter=in_picker)
+        def picker_select(event):
+            index = self._pet_picker_index
+            self._close_pet_picker()
+            if index is not None:
+                self._select_pet(PET_NAMES[index])
+
+        @bindings.add("escape", eager=True, filter=in_picker)
+        def picker_cancel(event):
+            self._close_pet_picker()
+
+        @bindings.add("enter", filter=not_in_picker)
         def submit(event):
             self.submit()
 
-        @bindings.add("escape", "enter")
-        @bindings.add("c-j")
+        @bindings.add("escape", "enter", filter=not_in_picker)
+        @bindings.add("c-j", filter=not_in_picker)
         def newline(event):
             self.buffer.insert_text("\n")
 
-        @bindings.add("tab")
+        @bindings.add("tab", filter=not_in_picker)
         def complete(event):
             matches = matching_commands(self.buffer.text)
             if matches:
@@ -267,14 +415,16 @@ class AgentTui:
 
         @bindings.add("c-c")
         def control_c(event):
-            if self.running:
+            if self._pet_picker_index is not None:
+                self._close_pet_picker()
+            elif self.running:
                 self.interrupt()
             elif self.buffer.text:
                 self.buffer.reset()
             else:
                 self.app.exit()
 
-        @bindings.add("c-d")
+        @bindings.add("c-d", filter=not_in_picker)
         def control_d(event):
             if not self.buffer.text and not self.running:
                 self.app.exit()
@@ -296,11 +446,17 @@ class AgentTui:
         self.buffer.append_to_history()
         self.buffer.reset()
         self._history.first_line = None
+        is_pet, pet_arg = parse_pet_command(prompt)
         if prompt == "/exit":
             self.app.exit()
         elif prompt == "/clear":
             self._set_agent(self.agent_factory())
             self.transcript.info("Started a new conversation.")
+        elif is_pet:
+            if pet_arg is None:
+                self._open_pet_picker()
+            else:
+                self._select_pet(pet_arg)
         elif result := command_output(prompt, self.agent):
             self.transcript.info(result)
         elif prompt.startswith("/") and not any(char.isspace() for char in prompt):
@@ -341,7 +497,9 @@ class AgentTui:
     # Entry points
 
     def _header(self) -> None:
-        self.transcript.header(**session_info(self.agent))
+        start = len(self._history.rows)
+        self.transcript.header(pet=self.pet, **session_info(self.agent))
+        self._header_len = len(self._history.rows) - start
 
     async def run_async(self) -> None:
         await self.app.run_async(pre_run=self._header)

@@ -4,6 +4,8 @@ import re
 
 from prompt_toolkit.utils import get_cwidth
 
+from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
+
 
 APP_NAME = "Simple Agent"
 TOOL_RESULT_LINES = 3
@@ -106,63 +108,6 @@ def shimmer(text: str, now: float, color: bool = True) -> str:
     return "".join(out)
 
 
-# The Chord Energy symbol, rasterized from the strokes of its brand SVG onto a
-# Braille dot grid (2x4 dots per cell), so it renders in any Unicode terminal.
-LOGO = [
-    "        ⢸⣸⢀⡄  ",
-    "        ⢸⣇⠎⢀⠔ ",
-    "        ⢸⢎⠔⢁⡠⠔",
-    "       ⢠⣿⠥⠒⣉⡠⠤",
-    "    ⢀⣠⣴⣿⣻⡮⠭⠤⠤⠒",
-    "⠶⣞⠿⢛⠝⣱⠃⡎⢸     ",
-    "  ⠐⠁⡰⠁⢰⠃⢸     ",
-]
-LOGO_GAP = 2
-# The brand gradient runs from blue at the lower left to lime at the upper right.
-LOGO_STOPS = [
-    (0.27, (0x24, 0xAB, 0xE2)),
-    (0.32, (0x2D, 0xAE, 0xD9)),
-    (0.41, (0x44, 0xB8, 0xC2)),
-    (0.51, (0x6A, 0xC7, 0x9C)),
-    (0.64, (0x9F, 0xDD, 0x67)),
-    (0.73, (0xCC, 0xEF, 0x3A)),
-]
-
-
-def _gradient(t: float) -> tuple[int, int, int]:
-    if t <= LOGO_STOPS[0][0]:
-        return LOGO_STOPS[0][1]
-    for (t0, c0), (t1, c1) in zip(LOGO_STOPS, LOGO_STOPS[1:]):
-        if t <= t1:
-            f = (t - t0) / (t1 - t0)
-            return tuple(round(a + (b - a) * f) for a, b in zip(c0, c1))
-    return LOGO_STOPS[-1][1]
-
-
-def _fg(rgb: tuple[int, int, int], true_color: bool) -> str:
-    """SGR foreground code: 24-bit when advertised, else the xterm 256-color cube."""
-    if true_color:
-        return "38;2;{};{};{}".format(*rgb)
-    r, g, b = (round(c / 255 * 5) for c in rgb)
-    return f"38;5;{16 + 36 * r + 6 * g + b}"
-
-
-def logo_rows(color: bool = True, *, true_color: bool = False) -> list[str]:
-    """Render the Chord logo, shading each cell along the brand gradient."""
-    rows, cols = len(LOGO), len(LOGO[0])
-    # Gradient axis in the SVG's 80x85 viewBox, (5.63, 93.37) -> (78.51, 10.41).
-    ax, ay, dx, dy = 5.63, 93.37, 72.88, -82.96
-    out = []
-    for y, row in enumerate(LOGO):
-        cells = []
-        for x, char in enumerate(row):
-            px, py = (x + 0.5) * 80 / cols, (y + 0.5) * 85 / rows
-            t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-            cells.append(sgr(char, _fg(_gradient(t), true_color), color) if char != " " else char)
-        out.append("".join(cells))
-    return out
-
-
 def header_cell(
     model: str | None,
     endpoint: str | None,
@@ -172,16 +117,18 @@ def header_cell(
     color: bool = True,
     *,
     true_color: bool = False,
+    pet: str = DEFAULT_PET,
 ) -> list[str]:
-    """Render the session box shown at startup, with the logo beside it when it fits."""
-    logo_width = len(LOGO[0]) + LOGO_GAP
-    if width - logo_width >= 40:
-        box = session_box(model, endpoint, directory, app_version, width - logo_width, color)
-        logo = logo_rows(color, true_color=true_color)
-        height = max(len(box), len(logo))
-        logo += [" " * len(LOGO[0])] * (height - len(logo))
+    """Render the session box shown at startup, with the pet beside it when it fits."""
+    art_width = pet_width(pet)
+    side_width = art_width + PET_GAP
+    if width - side_width >= 40:
+        box = session_box(model, endpoint, directory, app_version, width - side_width, color)
+        art = pet_rows(pet, color, true_color=true_color)
+        height = max(len(box), len(art))
+        art += [" " * art_width] * (height - len(art))
         box += [""] * (height - len(box))
-        return [(art + " " * LOGO_GAP + line).rstrip() for art, line in zip(logo, box)]
+        return [(pet_line + " " * PET_GAP + line).rstrip() for pet_line, line in zip(art, box)]
     return session_box(model, endpoint, directory, app_version, width, color)
 
 

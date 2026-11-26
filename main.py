@@ -2,13 +2,20 @@
 import argparse
 
 from simple_agent import create_agent
-from simple_agent.tui import AgentTui, interactive_terminal, run_plain
+from simple_agent.tui import PET_NAMES, AgentTui, interactive_terminal, run_plain, save_pet
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?", help="Omit for an interactive conversation")
+    parser.add_argument(
+        "--pet",
+        choices=PET_NAMES,
+        help=f"Select and save the header pet ({', '.join(PET_NAMES)})",
+    )
     args = parser.parse_args()
+    if args.pet:
+        save_pet(args.pet)
     if args.prompt:
         create_agent()(args.prompt)
         print()
