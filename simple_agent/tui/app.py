@@ -36,7 +36,7 @@ from .commands import COMMANDS, command_output, matching_commands, parse_slash_c
 from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
 from .session import conversation_turn, session_info, total_tokens
-from .terminal import use_color, use_true_color
+from .terminal import light_background, use_color, use_true_color
 from .transcript import Transcript
 
 
@@ -118,7 +118,13 @@ class AgentTui:
             layout=self._layout(),
             key_bindings=merge_key_bindings([load_key_bindings(), self._bindings()]),
             style=Style.from_dict(
-                {"prompt": "bold ansicyan", "placeholder": "ansibrightblack italic"} if self.color else {}
+                {
+                    "user": "#005f5f" if light_background() else "#afd7d7",
+                    "prompt": "bold ansicyan",
+                    "placeholder": "ansibrightblack italic",
+                }
+                if self.color
+                else {}
             ),
             full_screen=True,
             erase_when_done=True,
@@ -256,6 +262,7 @@ class AgentTui:
                     ConditionalProcessor(AfterInput(PLACEHOLDER, style="class:placeholder"), is_empty)
                 ],
             ),
+            style="class:user",
             get_line_prefix=line_prefix,
             wrap_lines=True,
             dont_extend_height=True,

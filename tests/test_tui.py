@@ -31,7 +31,7 @@ from simple_agent.tui import (
 )
 from simple_agent.tui.app import matching_commands
 from simple_agent.tui.pets import PETS, settings_path
-from simple_agent.tui.rendering import BOLD, DIM, session_box
+from simple_agent.tui.rendering import BOLD, BOLD_CYAN, DIM, USER_TEXT, USER_TEXT_LIGHT, session_box
 from simple_agent.tui.session import total_tokens
 
 
@@ -255,6 +255,51 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn("• Called read_file(", joined)
         self.assertIn("  └ safe", joined)
         self.assertIn("    line2", joined)
+
+    def test_user_text_is_styled_distinctly_from_agent_response_text(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"COLORFGBG": "15;0"}):
+            config = Path(tmp) / "settings.json"
+            rows = []
+            transcript = Transcript(rows.extend, lambda: 20, color=True)
+            transcript.user("First line wraps here\n\nSecond paragraph")
+            transcript(data="Agent reply wraps here")
+            transcript.end_turn(0)
+
+            tui = AgentTui(
+                lambda: SimpleNamespace(messages=[]),
+                output=DummyOutput(),
+                color=True,
+                config_path=config,
+            )
+            self.assertEqual(tui.app.style.get_attrs_for_style_str("class:user").color, "afd7d7")
+            self.assertEqual(tui.app.style.get_attrs_for_style_str("class:user class:prompt").color, "ansicyan")
+            self.assertEqual(
+                tui.app.style.get_attrs_for_style_str("class:user class:placeholder").color,
+                "ansibrightblack",
+            )
+
+        self.assertEqual(
+            rows,
+            [
+                "",
+                f"\x1b[{BOLD_CYAN}m›\x1b[0m \x1b[{USER_TEXT}mFirst line wraps\x1b[0m",
+                f"  \x1b[{USER_TEXT}mhere\x1b[0m",
+                "  ",
+                f"  \x1b[{USER_TEXT}mSecond paragraph\x1b[0m",
+                "",
+                "• Agent reply wraps",
+                "  here",
+            ],
+        )
+
+        with mock.patch.dict(os.environ, {"COLORFGBG": "0;15"}):
+            light_rows = []
+            light_transcript = Transcript(light_rows.extend, lambda: 80, color=True)
+            light_transcript.user("Hello")
+            self.assertEqual(
+                light_rows,
+                ["", f"\x1b[{BOLD_CYAN}m›\x1b[0m \x1b[{USER_TEXT_LIGHT}mHello\x1b[0m"],
+            )
 
     def test_markdown_fences_handle_nested_backticks_tildes_and_inline_spans(self):
         cell = StreamCell(width=80, bullet="•", color=True, markdown=True)

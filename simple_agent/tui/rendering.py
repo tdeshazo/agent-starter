@@ -7,6 +7,7 @@ from prompt_toolkit.utils import get_cwidth
 
 from ..settings import DEFAULT_AGENT_NAME
 from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
+from .terminal import light_background
 
 
 TOOL_RESULT_LINES = 3
@@ -17,6 +18,8 @@ DIM = "2"
 ITALIC_DIM = "2;3"
 CYAN = "36"
 BOLD_CYAN = "1;36"
+USER_TEXT = "38;5;152"
+USER_TEXT_LIGHT = "38;5;23"
 RED = "31"
 
 WORD = re.compile(r"([^\S\n]*)(\S+)")
@@ -216,9 +219,18 @@ def session_box(
     return lines
 
 
+def user_text_style() -> str:
+    return USER_TEXT_LIGHT if light_background() else USER_TEXT
+
+
 def user_cell(text: str, width: int, color: bool = True) -> list[str]:
     clean = sanitize_text(text)
-    rows = [row for line in clean.strip("\n").split("\n") for row in wrap(line, width - 2)]
+    style = user_text_style()
+    rows = [
+        sgr(row, style, color)
+        for line in clean.strip("\n").split("\n")
+        for row in wrap(line, width - 2)
+    ]
     return _prefixed(rows, sgr("›", BOLD_CYAN, color) + " ", "  ")
 
 

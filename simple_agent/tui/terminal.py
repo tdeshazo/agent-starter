@@ -16,6 +16,11 @@ def use_true_color() -> bool:
     return os.getenv("COLORTERM", "").lower() in {"truecolor", "24bit"}
 
 
+def light_background() -> bool:
+    _, _, bg = os.getenv("COLORFGBG", "").rpartition(";")
+    return bg in {"7", "15"}
+
+
 def write_stdout(text: str) -> None:
     sys.stdout.write(text)
     sys.stdout.flush()
