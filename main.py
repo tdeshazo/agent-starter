@@ -2,6 +2,7 @@
 import argparse
 
 from simple_agent import create_agent
+from simple_agent.settings import apply_agent_settings
 from simple_agent.tui import PET_NAMES, AgentTui, interactive_terminal, run_plain, save_pet
 
 
@@ -17,7 +18,9 @@ def main():
     if args.pet:
         save_pet(args.pet)
     if args.prompt:
-        create_agent()(args.prompt)
+        agent = create_agent()
+        apply_agent_settings(agent)
+        agent(args.prompt)
         print()
     elif interactive_terminal():
         AgentTui(create_agent).run()

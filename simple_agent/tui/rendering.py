@@ -4,10 +4,10 @@ import re
 
 from prompt_toolkit.utils import get_cwidth
 
+from ..settings import DEFAULT_AGENT_NAME
 from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
 
 
-APP_NAME = "Simple Agent"
 TOOL_RESULT_LINES = 3
 
 BOLD = "1"
@@ -118,18 +118,19 @@ def header_cell(
     *,
     true_color: bool = False,
     pet: str = DEFAULT_PET,
+    agent_name: str = DEFAULT_AGENT_NAME,
 ) -> list[str]:
     """Render the session box shown at startup, with the pet beside it when it fits."""
     art_width = pet_width(pet)
     side_width = art_width + PET_GAP
     if width - side_width >= 40:
-        box = session_box(model, endpoint, directory, app_version, width - side_width, color)
+        box = session_box(model, endpoint, directory, app_version, width - side_width, color, agent_name=agent_name)
         art = pet_rows(pet, color, true_color=true_color)
         height = max(len(box), len(art))
         art += [" " * art_width] * (height - len(art))
         box += [""] * (height - len(box))
         return [(pet_line + " " * PET_GAP + line).rstrip() for pet_line, line in zip(art, box)]
-    return session_box(model, endpoint, directory, app_version, width, color)
+    return session_box(model, endpoint, directory, app_version, width, color, agent_name=agent_name)
 
 
 def session_box(
@@ -139,9 +140,11 @@ def session_box(
     app_version: str | None,
     width: int,
     color: bool = True,
+    *,
+    agent_name: str = DEFAULT_AGENT_NAME,
 ) -> list[str]:
     """Render the bordered box listing the session's model, endpoint and directory."""
-    title = APP_NAME + (f" (v{app_version})" if app_version else "")
+    title = agent_name + (f" (v{app_version})" if app_version else "")
     fields = [(name, value) for name, value in (
         ("model:", model),
         ("endpoint:", endpoint),
@@ -154,8 +157,7 @@ def session_box(
 
     def styled_line(index: int, line: str) -> str:
         if index == 0:
-            name, paren, ver = line.partition(" (")
-            return sgr(name, BOLD, color) + (sgr(" (" + ver, DIM, color) if paren else "")
+            return sgr(line[:len(agent_name)], BOLD, color) + sgr(line[len(agent_name):], DIM, color)
         if line:
             return sgr(line[:label_width], DIM, color) + line[label_width:]
         return line

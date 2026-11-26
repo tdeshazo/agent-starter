@@ -27,9 +27,15 @@ uv run python main.py
 
 The full-screen TUI supports Alt+Enter for a newline, Page Up and Page Down to
 scroll the transcript, and Esc to stop a response. Type `/` to see commands,
-including `/clear`, `/exit`, `/pet`, `/tools`, and `/status`. Piped input uses a
+including `/clear`, `/exit`, `/pet`, `/settings`, `/tools`, and `/status`. Piped input uses a
 line-oriented interface. Stop the server with Ctrl-C in its terminal. Avoid
 running dictation inference simultaneously if GPU memory is limited.
+
+In the full-screen TUI, open `/settings` to edit the agent name and system
+prompt. Use Tab to switch fields, Enter for a newline in the prompt, Ctrl-S to
+save, or Esc to cancel. An empty system prompt disables it. Saved settings apply
+to the next response and persist across launches, including one-shot and piped
+use. Saving keeps the current conversation.
 
 ## Hardware settings
 
@@ -64,7 +70,7 @@ provision a Vulkan llama.cpp build with Gemma 4 support and E4B GGUF weights fir
 Agent setup lives in the `simple_agent` package:
 
 - `agent.py`: `create_agent()` wires the model, prompt, and tools together.
-- `prompts.py`: edit `SYSTEM_PROMPT` to define the agent's behavior.
+- `prompts.py`: defines the built-in `SYSTEM_PROMPT`.
 - `tools.py`: add functions decorated with `@tool` and register them in `DEFAULT_TOOLS`.
 
 Import the factory with `from simple_agent import create_agent`. Each call creates

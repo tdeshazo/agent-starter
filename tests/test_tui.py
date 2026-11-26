@@ -186,6 +186,57 @@ class TranscriptTests(unittest.TestCase):
 
 
 class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_settings_editor_updates_the_next_turn_and_persists_after_clear(self):
+        turns = asyncio.Queue()
+        previous_turn = {"role": "assistant", "content": [{"text": "Earlier reply"}]}
+
+        def make_agent(messages=None):
+            agent = SimpleNamespace(name="Default", system_prompt="Default prompt", messages=messages or [])
+
+            async def invoke(prompt):
+                turns.put_nowait((prompt, agent.name, agent.system_prompt, agent.messages.copy()))
+
+            agent.invoke_async = invoke
+            return agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            save_pet("cat", config)
+            with create_pipe_input() as terminal:
+                tui = AgentTui(
+                    make_agent, agent=make_agent([previous_turn]), input=terminal,
+                    output=DummyOutput(), color=False, config_path=config,
+                )
+                app = asyncio.create_task(tui.run_async())
+                try:
+                    terminal.send_text(
+                        "/settings\r\x01\x0bGuide\t\x01\x0bFirst line\rSecond line\x13"
+                        "/settings\r\x01\x0bDiscard this\x03"
+                        "First question\r"
+                    )
+                    self.assertEqual(
+                        await asyncio.wait_for(turns.get(), timeout=2),
+                        ("First question", "Guide", "First line\nSecond line", [previous_turn]),
+                    )
+                    terminal.send_text("/clear\rSecond question\r")
+                    self.assertEqual(
+                        await asyncio.wait_for(turns.get(), timeout=2),
+                        ("Second question", "Guide", "First line\nSecond line", []),
+                    )
+                    terminal.send_text("/exit\r")
+                    await asyncio.wait_for(app, timeout=2)
+                finally:
+                    if not app.done():
+                        app.cancel()
+                        await asyncio.gather(app, return_exceptions=True)
+
+            self.assertEqual(
+                json.loads(config.read_text(encoding="utf-8")),
+                {"pet": "cat", "agent_name": "Guide", "system_prompt": "First line\nSecond line"},
+            )
+            header = "\n".join(tui._history.rows[:tui._header_len])
+            self.assertIn("Guide", header)
+
     async def test_escape_stops_stream_and_restores_history(self):
         previous_turn = {"role": "assistant", "content": [{"text": "Earlier reply"}]}
         started = asyncio.Event()

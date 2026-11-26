@@ -9,6 +9,7 @@ from functools import cache
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
@@ -30,6 +31,8 @@ from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.output import Output
 from prompt_toolkit.styles import Style
 
+from ..prompts import SYSTEM_PROMPT
+from ..settings import DEFAULT_AGENT_NAME, apply_agent_settings, normalize_agent_name, save_settings
 from .commands import COMMANDS, command_output, parse_pet_command
 from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
@@ -102,6 +105,10 @@ class AgentTui:
         self.pet = load_pet(self.config_path)
         self._header_len = 0
         self._pet_picker_index: int | None = None
+        self._editing_settings = False
+        self._settings_error = ""
+        self._name_buffer = Buffer(multiline=False)
+        self._system_prompt_buffer = Buffer(multiline=True)
         self.transcript = Transcript(self._emit, self._width, self.color)
         self._history = TranscriptControl(self.transcript.tail)
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
@@ -127,6 +134,7 @@ class AgentTui:
     # Agent and output plumbing
 
     def _set_agent(self, agent) -> None:
+        apply_agent_settings(agent, self.config_path)
         self.agent = agent
         agent.callback_handler = self.transcript
 
@@ -174,6 +182,39 @@ class AgentTui:
         self._refresh_header()
         self.transcript.info(f"Selected pet: {canonical}.")
 
+    # Agent settings
+
+    def _open_settings(self) -> None:
+        name = normalize_agent_name(getattr(self.agent, "name", None)) or DEFAULT_AGENT_NAME
+        prompt = getattr(self.agent, "system_prompt", SYSTEM_PROMPT) or ""
+        self._name_buffer.reset(Document(name, len(name)))
+        self._system_prompt_buffer.reset(Document(prompt))
+        self._settings_error = ""
+        self._editing_settings = True
+        self.app.layout.focus(self._name_field)
+
+    def _close_settings(self) -> None:
+        self._editing_settings = False
+        self.app.layout.focus(self._composer)
+
+    def _save_agent_settings(self) -> None:
+        name = normalize_agent_name(self._name_buffer.text)
+        if name is None:
+            self._settings_error = "Enter a name on one line."
+            self.app.layout.focus(self._name_field)
+            return
+        prompt = self._system_prompt_buffer.text
+        try:
+            save_settings({"agent_name": name, "system_prompt": prompt}, self.config_path)
+        except OSError as error:
+            self._settings_error = f"Could not save settings: {error.strerror or error}"
+            return
+        self.agent.name = name
+        self.agent.system_prompt = prompt or None
+        self._close_settings()
+        self._refresh_header()
+        self.transcript.info("Agent settings saved.")
+
     def _refresh_header(self) -> None:
         if self._header_len <= 0 or len(self._history.rows) < self._header_len:
             return
@@ -200,10 +241,9 @@ class AgentTui:
             return [("", "  ")]
 
         in_picker = Condition(lambda: self._pet_picker_index is not None)
-        not_in_picker = Condition(lambda: self._pet_picker_index is None)
-        has_commands = Condition(
-            lambda: self._pet_picker_index is None and bool(matching_commands(self.buffer.text))
-        )
+        in_settings = Condition(lambda: self._editing_settings)
+        in_composer = ~in_picker & ~in_settings
+        has_commands = in_composer & Condition(lambda: bool(matching_commands(self.buffer.text)))
         is_empty = Condition(lambda: not self.buffer.text)
 
         self._composer = Window(
@@ -222,6 +262,23 @@ class AgentTui:
             FormattedTextControl(lambda: ansi(self._pet_picker_rows()), focusable=True),
             dont_extend_height=True,
         )
+        self._name_field = Window(BufferControl(self._name_buffer), height=1)
+        self._system_prompt_field = Window(
+            BufferControl(self._system_prompt_buffer),
+            height=Dimension(min=1, max=12),
+            wrap_lines=True,
+            dont_extend_height=True,
+        )
+        settings = HSplit([
+            Window(FormattedTextControl("Agent name"), height=1),
+            self._name_field,
+            Window(FormattedTextControl("System prompt"), height=1),
+            self._system_prompt_field,
+            ConditionalContainer(
+                Window(FormattedTextControl(lambda: self._settings_error), height=1),
+                Condition(lambda: bool(self._settings_error)),
+            ),
+        ])
         footer = VSplit([
             Window(FormattedTextControl(lambda: ansi([self._footer_hints()])), height=1),
             Window(
@@ -238,12 +295,13 @@ class AgentTui:
                     Condition(lambda: self.running),
                 ),
                 Window(height=Dimension(preferred=1, max=1)),
-                ConditionalContainer(self._composer, not_in_picker),
+                ConditionalContainer(self._composer, in_composer),
                 ConditionalContainer(
                     Window(FormattedTextControl(lambda: ansi(self._command_rows())), dont_extend_height=True),
                     has_commands,
                 ),
                 ConditionalContainer(self._picker_window, in_picker),
+                ConditionalContainer(settings, in_settings),
                 Window(height=Dimension(preferred=1, max=1)),
                 footer,
             ]),
@@ -321,7 +379,9 @@ class AgentTui:
         return rows
 
     def _footer_hints(self) -> str:
-        if self._pet_picker_index is not None:
+        if self._editing_settings:
+            hints = ["tab switch field", "⌃S save", "esc cancel"]
+        elif self._pet_picker_index is not None:
             hints = ["↑/↓ choose", "⏎ select", "esc cancel"]
         elif self.running:
             hints = ["esc interrupt", "⌃C interrupt"]
@@ -357,13 +417,33 @@ class AgentTui:
     def _bindings(self) -> KeyBindings:
         bindings = KeyBindings()
         in_picker = Condition(lambda: self._pet_picker_index is not None)
-        not_in_picker = Condition(lambda: self._pet_picker_index is None)
+        in_settings = Condition(lambda: self._editing_settings)
+        in_name = in_settings & Condition(lambda: self.app.layout.has_focus(self._name_field))
+        in_composer = ~in_picker & ~in_settings
 
-        @bindings.add("pageup")
+        @bindings.add("tab", filter=in_settings)
+        @bindings.add("s-tab", filter=in_settings)
+        def switch_field(event):
+            field = self._system_prompt_field if in_name() else self._name_field
+            self.app.layout.focus(field)
+
+        @bindings.add("enter", filter=in_name)
+        def focus_system_prompt(event):
+            self.app.layout.focus(self._system_prompt_field)
+
+        @bindings.add("c-s", filter=in_settings)
+        def save_settings_editor(event):
+            self._save_agent_settings()
+
+        @bindings.add("escape", eager=True, filter=in_settings)
+        def cancel_settings_editor(event):
+            self._close_settings()
+
+        @bindings.add("pageup", filter=~in_settings)
         def page_up(event):
             self._scroll_history(-1)
 
-        @bindings.add("pagedown")
+        @bindings.add("pagedown", filter=~in_settings)
         def page_down(event):
             self._scroll_history(1)
 
@@ -391,16 +471,16 @@ class AgentTui:
         def picker_cancel(event):
             self._close_pet_picker()
 
-        @bindings.add("enter", filter=not_in_picker)
+        @bindings.add("enter", filter=in_composer)
         def submit(event):
             self.submit()
 
-        @bindings.add("escape", "enter", filter=not_in_picker)
-        @bindings.add("c-j", filter=not_in_picker)
+        @bindings.add("escape", "enter", filter=in_composer)
+        @bindings.add("c-j", filter=in_composer)
         def newline(event):
             self.buffer.insert_text("\n")
 
-        @bindings.add("tab", filter=not_in_picker)
+        @bindings.add("tab", filter=in_composer)
         def complete(event):
             matches = matching_commands(self.buffer.text)
             if matches:
@@ -415,7 +495,9 @@ class AgentTui:
 
         @bindings.add("c-c")
         def control_c(event):
-            if self._pet_picker_index is not None:
+            if self._editing_settings:
+                self._close_settings()
+            elif self._pet_picker_index is not None:
                 self._close_pet_picker()
             elif self.running:
                 self.interrupt()
@@ -424,7 +506,7 @@ class AgentTui:
             else:
                 self.app.exit()
 
-        @bindings.add("c-d", filter=not_in_picker)
+        @bindings.add("c-d", filter=in_composer)
         def control_d(event):
             if not self.buffer.text and not self.running:
                 self.app.exit()
@@ -451,7 +533,10 @@ class AgentTui:
             self.app.exit()
         elif prompt == "/clear":
             self._set_agent(self.agent_factory())
+            self._refresh_header()
             self.transcript.info("Started a new conversation.")
+        elif prompt == "/settings":
+            self._open_settings()
         elif is_pet:
             if pet_arg is None:
                 self._open_pet_picker()

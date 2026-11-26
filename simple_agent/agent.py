@@ -5,6 +5,7 @@ from strands import Agent
 from strands.models.openai import OpenAIModel
 
 from .prompts import SYSTEM_PROMPT
+from .settings import DEFAULT_AGENT_NAME
 from .tools import DEFAULT_TOOLS
 
 
@@ -27,4 +28,9 @@ def create_agent() -> Agent:
             },
         },
     )
-    return Agent(model=model, tools=list(DEFAULT_TOOLS), system_prompt=SYSTEM_PROMPT)
+    return Agent(
+        model=model,
+        tools=list(DEFAULT_TOOLS),
+        name=DEFAULT_AGENT_NAME,
+        system_prompt=SYSTEM_PROMPT,
+    )

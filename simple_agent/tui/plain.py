@@ -4,6 +4,7 @@ import shutil
 import time
 from collections.abc import Callable
 
+from ..settings import apply_agent_settings
 from .commands import command_output, parse_pet_command
 from .pets import PET_NAMES, load_pet, normalize_pet, save_pet
 from .session import conversation_turn, session_info
@@ -27,6 +28,7 @@ def run_plain(
         color,
     )
     agent = agent if agent is not None else agent_factory()
+    apply_agent_settings(agent, config_path)
     agent.callback_handler = transcript
     transcript.header(pet=pet, **session_info(agent))
     while True:
@@ -39,8 +41,12 @@ def run_plain(
             continue
         if prompt == "/exit":
             break
+        if prompt == "/settings":
+            transcript.info("Open the full-screen interface to edit agent settings.")
+            continue
         if prompt == "/clear":
             agent = agent_factory()
+            apply_agent_settings(agent, config_path)
             agent.callback_handler = transcript
             transcript.info("Started a new conversation.")
             continue

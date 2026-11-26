@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlsplit
 
+from ..settings import DEFAULT_AGENT_NAME, normalize_agent_name
+
 
 @contextmanager
 def conversation_turn(messages: list):
@@ -45,7 +47,13 @@ def session_info(agent) -> dict:
         app_version = version("simple-agent")
     except PackageNotFoundError:
         app_version = None
-    return {"model": session_model_id(agent), "endpoint": endpoint, "directory": directory, "app_version": app_version}
+    return {
+        "model": session_model_id(agent),
+        "endpoint": endpoint,
+        "directory": directory,
+        "app_version": app_version,
+        "agent_name": normalize_agent_name(getattr(agent, "name", None)) or DEFAULT_AGENT_NAME,
+    }
 
 
 def total_tokens(agent) -> int:

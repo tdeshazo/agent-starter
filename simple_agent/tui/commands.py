@@ -10,6 +10,7 @@ COMMANDS = {
     "/clear": "start a new conversation with empty history",
     "/exit": "exit the agent",
     "/pet": f"choose a companion pet ({len(PET_NAMES)} available)",
+    "/settings": "edit the agent name and system prompt",
     "/tools": "list the registered tools",
     "/status": "show the active provider and model ID",
 }

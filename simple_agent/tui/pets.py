@@ -1,10 +1,9 @@
 """Define header companion pets, half-block pixel sprites, and persisted selection."""
 from dataclasses import dataclass
-import json
-import os
 from pathlib import Path
 import re
-import tempfile
+
+from ..settings import load_settings, save_settings, settings_path as settings_path
 
 
 PET_NAMES = (
@@ -434,23 +433,9 @@ def normalize_pet(name: str | None) -> str | None:
     return normalized if normalized in PETS else None
 
 
-def settings_path() -> Path:
-    """Return the user-level settings file path for persisting preferences."""
-    config_home = os.getenv("XDG_CONFIG_HOME")
-    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "simple-agent" / "settings.json"
-
-
 def load_pet(path: Path | None = None) -> str:
     """Load the persisted pet name, falling back to DEFAULT_PET on any issue."""
-    target = path if path is not None else settings_path()
-    try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return DEFAULT_PET
-    if not isinstance(data, dict):
-        return DEFAULT_PET
-    return normalize_pet(data.get("pet")) or DEFAULT_PET
+    return normalize_pet(load_settings(path).get("pet")) or DEFAULT_PET
 
 
 def save_pet(pet: str, path: Path | None = None) -> str:
@@ -459,28 +444,7 @@ def save_pet(pet: str, path: Path | None = None) -> str:
     if canonical is None:
         choices = ", ".join(PET_NAMES)
         raise ValueError(f"Unknown pet {pet!r}. Choose from: {choices}.")
-    target = path if path is not None else settings_path()
-    data: dict[str, object] = {}
-    try:
-        existing = json.loads(target.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            data = existing
-    except (OSError, ValueError):
-        pass
-    data["pet"] = canonical
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2) + "\n"
-    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".settings-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-        os.replace(tmp_name, target)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    save_settings({"pet": canonical}, path)
     return canonical
 
 
