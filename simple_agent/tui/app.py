@@ -543,6 +543,7 @@ class AgentTui:
                 self.app.exit()
             elif cmd.name == "/clear":
                 self._set_agent(self.agent_factory())
+                del self._history.rows[self._header_len:]
                 self._refresh_header()
                 self.transcript.info("Started a new conversation.")
             elif cmd.name == "/settings":

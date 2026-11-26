@@ -19,6 +19,9 @@ PET_NAMES = (
     "ghost",
     "snail",
     "mimic",
+    "crt",
+    "ooze",
+    "orb",
 )
 DEFAULT_PET = "frog"
 PET_GAP = 2
@@ -420,6 +423,96 @@ PETS: dict[str, Pet] = {
             "c": (0xFF, 0xFC, 0xF0),  # bright mischievous eye sclera
             "e": (0xFF, 0xC8, 0x3A),  # glowing golden mimic iris
             "f": (0xC4, 0x68, 0x82),  # stubby dusty-rose monster feet
+        },
+    ),
+    "crt": Pet(
+        name="crt",
+        label="CRT",
+        description="Hums warmly and beams whenever a command exits zero",
+        pixels=(
+            "..hhhhhhhhhhhh..",
+            ".hbbbbbbbbbbbbs.",
+            "hbkkkkkkkkkkkkbs",
+            "hbkkkkkkkkkkkkbs",
+            "hbkklkkkkkklkkbs",
+            "hbkgkgkkkkgkgkbs",
+            "hbkkkkkkkkkkkkbs",
+            "hbkkkkggggkkkkbs",
+            "sbkkkkkkkkkkkkbs",
+            ".sbbbbbbbbbbebs.",
+            "..dddddddddddd..",
+            ".hbbbbbbbbbbbbs.",
+            ".sbbssbbbbkkkbs.",
+            "..ssssssssssss..",
+        ),
+        palette={
+            "h": (0xEE, 0xEA, 0xD4),  # warm cream plastic highlight
+            "b": (0xD2, 0xC7, 0xAE),  # vintage putty-beige monitor casing
+            "s": (0x9A, 0x8F, 0x78),  # warm greige bezel shadow
+            "d": (0x5C, 0x54, 0x46),  # dark slate-taupe monitor neck
+            "k": (0x10, 0x18, 0x14),  # deep dark phosphor CRT screen and drive slot
+            "l": (0xAD, 0xFF, 0xB8),  # bright phosphor-green beam peak
+            "g": (0x3E, 0xE6, 0x68),  # classic P1 phosphor green ^_^ face
+            "e": (0xFF, 0xB8, 0x38),  # warm amber power indicator LED
+        },
+    ),
+    "ooze": Pet(
+        name="ooze",
+        label="Ooze",
+        description="Wobbles contentedly and absorbs stray stack traces",
+        pixels=(
+            ".....llllll..bl.",
+            "...llhhhhggll.ll",
+            "..lhhggggggggl..",
+            "..lhggggggbbgl..",
+            ".lhgggggggggggl.",
+            ".lggwkggggwkggl.",
+            ".lggkkggggkkggl.",
+            ".lgggggkkgggggl.",
+            ".gggbbggggggddg.",
+            "lggggggggggdddgl",
+            "lggggdddddddddgl",
+            "ggggdddddddddddg",
+            "dddddddddddddddd",
+            ".dddd..ddddddd.d",
+        ),
+        palette={
+            "h": (0xF2, 0xFF, 0xE6),  # wet specular jelly highlight
+            "b": (0xBA, 0xFA, 0x84),  # suspended lime-cream air bubbles
+            "l": (0x6C, 0xE8, 0x44),  # translucent bright lime outer membrane
+            "g": (0x28, 0xBA, 0x4C),  # vibrant emerald gelatinous body
+            "d": (0x14, 0x7A, 0x42),  # dense deep-emerald puddle core
+            "w": (0xFA, 0xFC, 0xF6),  # glossy eye catchlights
+            "k": (0x10, 0x18, 0x14),  # dark suspended bead eyes and smile
+        },
+    ),
+    "orb": Pet(
+        name="orb",
+        label="Orb",
+        description="Quietly ponders the codebase from another plane",
+        pixels=(
+            ".....mmmmmm.....",
+            "...mmlhhhhmvd...",
+            "..mlhhwwllmmvd..",
+            "..mhwwllllmmvd..",
+            ".mllllllmmmmvvd.",
+            ".mllllmmmmmvvvd.",
+            ".mllmmmmvvvvvdd.",
+            ".mmmvvvvvvvvddd.",
+            ".mmvvvvvvvddddd.",
+            ".dvvvvvvddddlld.",
+            "..dvvvddddllld..",
+            "..dddddddlllld..",
+            "...dddddddddd...",
+            ".....dddddd.....",
+        ),
+        palette={
+            "w": (0xFF, 0xF5, 0xFF),  # gleaming crystal specular highlight
+            "h": (0xEA, 0xBE, 0xFF),  # bright astral-lilac sheen
+            "l": (0xC4, 0x78, 0xFF),  # glowing orchid inner nebula
+            "m": (0x94, 0x38, 0xE6),  # vivid royal-amethyst sphere
+            "v": (0x68, 0x18, 0xB4),  # deep cosmic-violet body
+            "d": (0x3A, 0x0E, 0x6E),  # abyssal indigo shadow rim
         },
     ),
 }

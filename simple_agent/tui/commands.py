@@ -9,7 +9,7 @@ from .session import session_model_id
 
 
 COMMANDS = {
-    "/clear": "start a new conversation with empty history",
+    "/clear": "clear the transcript and start a new conversation",
     "/exit": "exit the agent",
     "/pet": f"choose a companion pet ({len(PET_NAMES)} available)",
     "/settings": "edit the agent name and system prompt",

@@ -31,6 +31,8 @@ including `/clear`, `/exit`, `/pet`, `/settings`, `/tools`, and `/status`. Piped
 line-oriented interface. Stop the server with Ctrl-C in its terminal. Avoid
 running dictation inference simultaneously if GPU memory is limited.
 
+Use `/clear` to start a new conversation and clear the full-screen transcript.
+
 In the full-screen TUI, open `/settings` to edit the agent name and system
 prompt. Use Tab to switch fields, Enter for a newline in the prompt, Ctrl-S to
 save, or Esc to cancel. An empty system prompt disables it. Saved settings apply

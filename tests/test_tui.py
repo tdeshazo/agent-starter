@@ -52,6 +52,9 @@ class PetTests(unittest.TestCase):
                 "ghost",
                 "snail",
                 "mimic",
+                "crt",
+                "ooze",
+                "orb",
             ),
         )
         sprites = set()
@@ -130,10 +133,17 @@ class PetTests(unittest.TestCase):
                 "/pet ghost",
                 "/pet snail",
                 "/pet mimic",
+                "/pet crt",
+                "/pet ooze",
+                "/pet orb",
             ],
         )
         self.assertEqual(matching_commands("/pet r"), ["/pet rabbit", "/pet robot"])
-        self.assertEqual(matching_commands("/pet o"), ["/pet octopus"])
+        self.assertEqual(matching_commands("/pet c"), ["/pet cat", "/pet crt"])
+        self.assertEqual(matching_commands("/pet cr"), ["/pet crt"])
+        self.assertEqual(matching_commands("/pet o"), ["/pet octopus", "/pet ooze", "/pet orb"])
+        self.assertEqual(matching_commands("/pet oo"), ["/pet ooze"])
+        self.assertEqual(matching_commands("/pet or"), ["/pet orb"])
         self.assertEqual(matching_commands("/pet al"), ["/pet alien"])
         self.assertEqual(matching_commands("/pet m"), ["/pet moth", "/pet mimic"])
         self.assertEqual(matching_commands("/pet ax"), ["/pet axolotl"])
@@ -379,6 +389,34 @@ class TranscriptTests(unittest.TestCase):
 
 
 class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clear_removes_transcript_and_starts_new_conversation(self):
+        old_agent = SimpleNamespace(messages=[{"role": "user", "content": []}])
+        new_agent = SimpleNamespace(messages=[])
+        with tempfile.TemporaryDirectory() as tmp, create_pipe_input() as terminal:
+            tui = AgentTui(
+                lambda: new_agent, agent=old_agent, input=terminal,
+                output=DummyOutput(), color=False, config_path=Path(tmp) / "settings.json",
+            )
+            tui._header()
+            tui.transcript.user("Previous question")
+            tui.transcript.info("Previous response")
+            tui._history.first_line = 0
+
+            tui.buffer.text = "/clear"
+            tui.submit()
+
+            rendered = "\n".join(tui._history.rows)
+            self.assertNotIn("Previous question", rendered)
+            self.assertNotIn("Previous response", rendered)
+            self.assertIn("Started a new conversation.", rendered)
+            self.assertIs(tui.agent, new_agent)
+            self.assertEqual(tui.agent.messages, [])
+            self.assertIsNone(tui._history.first_line)
+            self.assertGreater(tui._header_len, 0)
+
+            tui.transcript.user("New question")
+            self.assertIn("New question", "\n".join(tui._history.rows))
+
     async def test_settings_editor_updates_the_next_turn_and_persists_after_clear(self):
         turns = asyncio.Queue()
         previous_turn = {"role": "assistant", "content": [{"text": "Earlier reply"}]}
