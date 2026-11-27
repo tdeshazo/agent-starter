@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simple Agent — Interactive Codebase Atlas</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-badge">SA</div>
+      <div>
+        <h1>Simple Agent — Codebase Atlas</h1>
+        <div class="brand-sub" id="meta-banner">Loading repository metadata…</div>
+      </div>
+    </div>
+    <nav class="main-tabs" role="tablist" aria-label="Atlas sections">
+      <button class="main-tab active" data-view="c4" role="tab" aria-selected="true">C4 Architecture</button>
+      <button class="main-tab" data-view="inventory" role="tab" aria-selected="false">Feature Inventory</button>
+      <button class="main-tab" data-view="walkthroughs" role="tab" aria-selected="false">Walkthroughs</button>
+      <button class="main-tab" data-view="tutorial" role="tab" aria-selected="false">Tutorial: Add a Tool</button>
+      <button class="main-tab" data-view="labs" role="tab" aria-selected="false">Interactive Labs</button>
+      <button class="main-tab" data-view="learning" role="tab" aria-selected="false">Exercises &amp; Quizzes</button>
+      <button class="main-tab" data-view="provenance" role="tab" aria-selected="false">Provenance &amp; Tests</button>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" id="btn-theme" title="Toggle light/dark theme">☀ Light</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- VIEW 1: C4 ARCHITECTURE -->
+    <section id="view-c4" class="view-section active">
+      <div class="section-header">
+        <div>
+          <h2>Multi-Level Architecture (C4 Model)</h2>
+          <p class="lead">
+            Navigate from system boundaries down to individual classes and functions. Click any node to inspect verbatim source excerpts, call chains, tests, and evidence provenance.
+          </p>
+        </div>
+        <div class="c4-level-bar" id="c4-level-bar">
+          <button class="pill active" data-level="l1">L1 · System Context</button>
+          <button class="pill" data-level="l2">L2 · Containers</button>
+          <button class="pill" data-level="l3">L3 · Components</button>
+          <button class="pill" data-level="l4">L4 · Code Topology</button>
+        </div>
+      </div>
+
+      <div class="legend-strip">
+        <span class="legend-item"><span class="dot dot-person"></span>Person / Actor</span>
+        <span class="legend-item"><span class="dot dot-system"></span>System</span>
+        <span class="legend-item"><span class="dot dot-container"></span>Container</span>
+        <span class="legend-item"><span class="dot dot-component"></span>Component / Module</span>
+        <span class="legend-item"><span class="dot dot-external"></span>External / Runtime</span>
+        <span class="legend-sep">|</span>
+        <span class="badge badge-verified">VERIFIED RUNTIME</span>
+        <span class="badge badge-static">STATIC ANALYSIS</span>
+        <span class="badge badge-assumption">EXTERNAL / ASSUMPTION</span>
+      </div>
+
+      <div class="c4-workspace">
+        <div class="c4-canvas-card">
+          <div class="c4-canvas-header">
+            <span id="c4-diagram-title">Level 1: System Context</span>
+            <span class="muted" id="c4-diagram-hint">Click any node to inspect source &amp; tests</span>
+          </div>
+          <div id="c4-svg-host" class="svg-host"></div>
+          <div id="c4-edge-list" class="edge-list"></div>
+        </div>
+        <aside class="inspector-card" id="c4-inspector">
+          <div class="inspector-empty">
+            <h3>Component Inspector</h3>
+            <p class="muted">Select a node in the diagram to view its responsibility, exact source lines, verbatim code excerpts, test coverage, and failure modes.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- VIEW 2: SEARCHABLE FEATURE INVENTORY -->
+    <section id="view-inventory" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>Searchable Feature &amp; Entry-Point Inventory</h2>
+          <p class="lead">Filter by keyword, subsystem category, or verification level to jump straight to entry points, symbols, walkthroughs, and tests.</p>
+        </div>
+      </div>
+      <div class="filter-bar">
+        <input type="search" id="inv-search" class="search-input" placeholder="Search features, files, functions, slash commands, flags, tools… (e.g. conversation_turn, O_NOFOLLOW, /clear)" autocomplete="off">
+        <select id="inv-category" class="select-input">
+          <option value="all">All Categories</option>
+          <option value="orchestration">Orchestration Loop</option>
+          <option value="memory">Memory &amp; Turn State</option>
+          <option value="tools">Tools &amp; Security</option>
+          <option value="persistence">Persistence &amp; Settings</option>
+          <option value="tui">TUI, Markdown &amp; Scroll</option>
+          <option value="runtime">Inference Runtime</option>
+        </select>
+        <select id="inv-evidence" class="select-input">
+          <option value="all">All Provenance</option>
+          <option value="verified">Verified Runtime</option>
+          <option value="static">Static Analysis</option>
+          <option value="assumption">External / Assumption</option>
+        </select>
+        <span class="muted" id="inv-count"></span>
+      </div>
+      <div id="inv-grid" class="inv-grid"></div>
+    </section>
+
+    <!-- VIEW 3: END-TO-END WALKTHROUGHS -->
+    <section id="view-walkthroughs" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>End-to-End Execution Walkthroughs</h2>
+          <p class="lead">Step through major flows with sequence diagrams, call chains, state transitions, verbatim source excerpts, debugger breakpoints, and failure scenarios.</p>
+        </div>
+      </div>
+      <div class="wt-layout">
+        <aside class="wt-sidebar" id="wt-sidebar"></aside>
+        <div class="wt-main" id="wt-main"></div>
+      </div>
+    </section>
+
+    <!-- VIEW 3B: TUTORIAL — ADD A NEW TOOL -->
+    <section id="view-tutorial" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>Tutorial: Adding a New Tool (Calculator Example)</h2>
+          <p class="lead">Step-by-step mentor guide to extending <code>simple_agent</code> with a safe, AST-whitelisted <code>calculate</code> tool — following the exact conventions and security invariants of the repository.</p>
+        </div>
+      </div>
+      <div id="tutorial-stage"></div>
+    </section>
+
+    <!-- VIEW 4: INTERACTIVE LABS -->
+    <section id="view-labs" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>Interactive Logic Visualizations</h2>
+          <p class="lead">Hands-on simulators modeled directly on the repository's trickiest state machines and security invariants.</p>
+        </div>
+        <div class="c4-level-bar" id="lab-selector">
+          <button class="pill active" data-lab="turn">1 · Turn &amp; Rollback</button>
+          <button class="pill" data-lab="security">2 · Tool Security &amp; Budgets</button>
+          <button class="pill" data-lab="stream">3 · StreamCell &amp; Split ANSI</button>
+          <button class="pill" data-lab="scroll">4 · Sticky Scroll &amp; Pager</button>
+        </div>
+      </div>
+      <div id="lab-stage" class="lab-stage"></div>
+    </section>
+
+    <!-- VIEW 5: EXERCISES & COMPREHENSION QUIZZES -->
+    <section id="view-learning" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>Hands-On Exercises &amp; Comprehension Checks</h2>
+          <p class="lead">Build technical ownership progressively. Hints, reference solutions, and quiz answers stay hidden until you explicitly reveal them.</p>
+        </div>
+        <div class="c4-level-bar" id="learning-tabs">
+          <button class="pill active" data-sub="exercises">Progressive Exercises</button>
+          <button class="pill" data-sub="quizzes">Comprehension Questions</button>
+        </div>
+      </div>
+      <div id="learning-stage"></div>
+    </section>
+
+    <!-- VIEW 6: PROVENANCE & TESTS -->
+    <section id="view-provenance" class="view-section">
+      <div class="section-header">
+        <div>
+          <h2>Evidence Provenance, Git Snapshot &amp; Test Verification</h2>
+          <p class="lead">Transparent separation of what was executed and verified locally vs. statically analyzed in source vs. assumed about external dependencies.</p>
+        </div>
+      </div>
+      <div id="provenance-stage"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="footer-meta">Simple Agent Codebase Atlas</span>
+    <span class="muted">No application code modified · Source excerpts extracted verbatim</span>
+  </footer>
+
+  <!-- Classic scripts so the Atlas works over both file:// and http://localhost -->
+  <script src="data/excerpts.js"></script>
+  <script src="data/architecture.js"></script>
+  <script src="data/walkthroughs.js"></script>
+  <script src="data/tutorials.js"></script>
+  <script src="data/learning.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
