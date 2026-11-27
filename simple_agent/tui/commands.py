@@ -1,11 +1,8 @@
 """Describe slash commands and format local session information."""
 from dataclasses import dataclass
-import re
 
-from strands.models.openai import OpenAIModel
-
-from .pets import PET_NAMES
-from .session import session_model_id
+from ..conversation import Conversation
+from ..preferences import PET_NAMES, pet_slug
 
 
 COMMANDS = {
@@ -29,7 +26,7 @@ def matching_commands(text: str) -> list[str]:
     if not text.startswith("/"):
         return []
     if text.startswith("/pet "):
-        arg = re.sub(r"[\s_]+", "-", text[5:].strip().lower())
+        arg = pet_slug(text[5:])
         return [f"/pet {name}" for name in PET_NAMES if name.startswith(arg)]
     if any(char.isspace() for char in text):
         return []
@@ -69,22 +66,16 @@ def parse_slash_command(prompt: str, *, interactive: bool = True) -> SlashComman
     return None
 
 
-def command_output(prompt: str, agent) -> str | None:
+def command_output(prompt: str, conversation: Conversation) -> str | None:
     """Return the transcript text for a read-only slash command."""
     if prompt == "/tools":
-        registry = getattr(agent, "tool_registry", None)
-        specs = registry.get_all_tool_specs() if registry is not None else ()
-        lines = []
-        for spec in specs:
-            name = spec["name"]
-            summary = spec.get("description", "").partition("\n")[0]
-            lines.append(f"{name} — {summary}" if summary else name)
+        lines = [
+            f"{tool.name} — {tool.summary}" if tool.summary else tool.name
+            for tool in conversation.tools()
+        ]
         return "\n".join(lines) or "No tools registered."
     if prompt == "/status":
-        provider = getattr(agent, "provider_name", None)
-        if not provider:
-            model = getattr(agent, "model", None)
-            provider = "OpenAI-compatible" if isinstance(model, OpenAIModel) else "unknown"
-        model_id = session_model_id(agent) or "provider default"
-        return f"Provider: {provider}\nModel ID: {model_id}"
+        details = conversation.details()
+        model_id = details.model or "provider default"
+        return f"Provider: {details.provider}\nModel ID: {model_id}"
     return None

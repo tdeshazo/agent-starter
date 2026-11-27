@@ -1,12 +1,15 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
 from pathlib import Path
 import tempfile
+from threading import Event
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from simple_agent import settings
 from simple_agent.agent import create_agent, resolve_base_url
 from simple_agent.cli import main, run_cli
 from simple_agent.settings import (
@@ -45,6 +48,44 @@ class SettingsTests(unittest.TestCase):
 
             config.write_text('["not-a-dict"]\n', encoding="utf-8")
             self.assertEqual(load_settings(config), {})
+
+
+    def test_concurrent_saves_merge_distinct_preferences(self):
+        started = Event()
+        second_lock = Event()
+        first_committed = Event()
+        replace_settings = settings._replace_settings
+        flock = settings.fcntl.flock
+
+        def wait_before_replace(path, data):
+            if "agent_name" in data and "pet" not in data:
+                started.set()
+                if not second_lock.wait(timeout=5):
+                    raise AssertionError("Second writer did not attempt to acquire the lock")
+                replace_settings(path, data)
+                first_committed.set()
+            else:
+                self.assertTrue(first_committed.is_set())
+                replace_settings(path, data)
+
+        def observe_lock(fd, flags):
+            if started.is_set():
+                second_lock.set()
+            flock(fd, flags)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            with (
+                mock.patch.object(settings, "_replace_settings", side_effect=wait_before_replace),
+                mock.patch.object(settings.fcntl, "flock", side_effect=observe_lock),
+                ThreadPoolExecutor(max_workers=2) as workers,
+            ):
+                first = workers.submit(save_settings, {"agent_name": "Guide"}, config)
+                self.assertTrue(started.wait(timeout=5))
+                second = workers.submit(save_settings, {"pet": "frog"}, config)
+                first.result(timeout=5)
+                second.result(timeout=5)
+            self.assertEqual(load_settings(config), {"agent_name": "Guide", "pet": "frog"})
 
 
 class BaseUrlTests(unittest.TestCase):
@@ -113,6 +154,7 @@ class CliTests(unittest.TestCase):
                 self.messages = [prior]
 
             def __call__(self, prompt):
+                self.messages[0]["content"][0]["text"] = "Changed during turn"
                 self.messages.append({"role": "user", "content": [{"text": prompt}]})
                 raise KeyboardInterrupt
 
@@ -121,7 +163,7 @@ class CliTests(unittest.TestCase):
         with redirect_stderr(err_interrupt):
             code = run_cli(["Stop me"], agent_factory=lambda: agent)
         self.assertEqual(code, 130)
-        self.assertEqual(agent.messages, [prior])
+        self.assertEqual(agent.messages, [{"role": "assistant", "content": [{"text": "Earlier"}]}])
         self.assertIn("Response stopped", err_interrupt.getvalue())
 
         with mock.patch("simple_agent.cli.run_cli", return_value=1):

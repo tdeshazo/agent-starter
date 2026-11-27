@@ -1,29 +1,9 @@
-"""Define header companion pets, half-block pixel sprites, and persisted selection."""
+"""Define header companion pets, half-block pixel sprites."""
 from dataclasses import dataclass
-from pathlib import Path
-import re
 
-from ..settings import load_settings, save_settings, settings_path as settings_path
+from ..preferences import DEFAULT_PET, normalize_pet
 
 
-PET_NAMES = (
-    "frog",
-    "rabbit",
-    "cat",
-    "octopus",
-    "alien",
-    "robot",
-    "moth",
-    "axolotl",
-    "hermit-crab",
-    "ghost",
-    "snail",
-    "mimic",
-    "crt",
-    "ooze",
-    "orb",
-)
-DEFAULT_PET = "frog"
 PET_GAP = 2
 
 _HALF_BLOCKS = {
@@ -516,29 +496,6 @@ PETS: dict[str, Pet] = {
         },
     ),
 }
-
-
-def normalize_pet(name: str | None) -> str | None:
-    """Return a canonical pet name if valid, otherwise None."""
-    if not isinstance(name, str):
-        return None
-    normalized = re.sub(r"[\s_]+", "-", name.strip().lower())
-    return normalized if normalized in PETS else None
-
-
-def load_pet(path: Path | None = None) -> str:
-    """Load the persisted pet name, falling back to DEFAULT_PET on any issue."""
-    return normalize_pet(load_settings(path).get("pet")) or DEFAULT_PET
-
-
-def save_pet(pet: str, path: Path | None = None) -> str:
-    """Validate and persist the chosen pet name across sessions."""
-    canonical = normalize_pet(pet)
-    if canonical is None:
-        choices = ", ".join(PET_NAMES)
-        raise ValueError(f"Unknown pet {pet!r}. Choose from: {choices}.")
-    save_settings({"pet": canonical}, path)
-    return canonical
 
 
 def _cube_index(rgb: tuple[int, int, int]) -> int:

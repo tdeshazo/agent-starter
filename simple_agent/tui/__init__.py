@@ -1,7 +1,9 @@
 """Terminal entry points and shared transcript rendering."""
 
+from ..preferences import DEFAULT_PET, PET_NAMES
+from ..settings import load_pet, save_pet
 from .app import AgentTui
-from .pets import DEFAULT_PET, PET_NAMES, load_pet, pet_rows, save_pet
+from .pets import pet_rows
 from .plain import run_plain
 from .rendering import StreamCell, header_cell, sanitize_text, wrap
 from .session import session_info

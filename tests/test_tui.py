@@ -16,22 +16,26 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.utils import get_cwidth
 
+from simple_agent.agent import create_conversation
+from simple_agent.conversation import TextDelta
+from simple_agent.settings import open_preferences, settings_path
+from simple_agent.strands_backend import StrandsBackend, invocation_error, strands_callback
 from simple_agent.tui import (
     DEFAULT_PET,
     PET_NAMES,
-    AgentTui,
+    AgentTui as ConversationTui,
     StreamCell,
     Transcript,
     header_cell,
     load_pet,
     pet_rows,
-    run_plain,
+    run_plain as run_plain_conversation,
     sanitize_text,
     save_pet,
     session_info,
 )
 from simple_agent.tui.app import matching_commands
-from simple_agent.tui.pets import PETS, settings_path
+from simple_agent.tui.pets import PETS
 from simple_agent.tui.rendering import (
     BOLD_CYAN,
     BOLD_RED,
@@ -42,7 +46,18 @@ from simple_agent.tui.rendering import (
     USER_TEXT_LIGHT,
     session_box,
 )
-from simple_agent.tui.session import total_tokens
+
+
+def build_tui(agent_factory, *, config_path, agent=None, **options):
+    preferences = open_preferences(config_path)
+    conversation = create_conversation(agent_factory, preferences, agent=agent)
+    return ConversationTui(conversation, preferences, **options)
+
+
+def run_plain(agent_factory, *, read, config_path):
+    preferences = open_preferences(config_path)
+    conversation = create_conversation(agent_factory, preferences)
+    run_plain_conversation(conversation, preferences, read=read)
 
 
 class PetTests(unittest.TestCase):
@@ -209,7 +224,7 @@ class PlainModePetTests(unittest.TestCase):
 
 class PackageMetadataTests(unittest.TestCase):
     def test_session_info_reports_installed_package_version(self):
-        info = session_info(SimpleNamespace(messages=[]))
+        info = session_info(StrandsBackend(SimpleNamespace(messages=[])).details())
         self.assertEqual(info["app_version"], "0.1.0")
         header = "\n".join(header_cell(**info, width=80, color=False))
         self.assertIn("Simple Agent (v0.1.0)", header)
@@ -220,7 +235,7 @@ class TranscriptTests(unittest.TestCase):
         rows = []
         transcript = Transcript(rows.extend, lambda: 15, color=False)
         for chunk in ("One two thr", "ee four\n\n  In", "dented line"):
-            transcript(data=chunk)
+            strands_callback(transcript)(data=chunk)
         transcript.end_turn(0)
 
         self.assertEqual(rows, ["", "• One two three", "  four", "", "    Indented", "  line"])
@@ -228,15 +243,15 @@ class TranscriptTests(unittest.TestCase):
     def test_tool_lines_stay_inside_the_agent_turn(self):
         rows = []
         transcript = Transcript(rows.extend, lambda: 80, color=False)
-        transcript(data="Checking")
-        transcript(message={"content": [{"toolUse": {
+        strands_callback(transcript)(data="Checking")
+        strands_callback(transcript)(message={"content": [{"toolUse": {
             "toolUseId": "1", "name": "current_time", "input": {},
         }}]})
         self.assertEqual(transcript.tail(), ["", "• Calling current_time({})"])
-        transcript(message={"content": [{"toolResult": {
+        strands_callback(transcript)(message={"content": [{"toolResult": {
             "toolUseId": "1", "status": "success", "content": [{"text": "12:00"}],
         }}]})
-        transcript(data="Done.\n")
+        strands_callback(transcript)(data="Done.\n")
         transcript.end_turn(1)
 
         self.assertEqual(rows[:-1], [
@@ -252,14 +267,14 @@ class TranscriptTests(unittest.TestCase):
         rows = []
         transcript = Transcript(rows.extend, lambda: 80, color=False)
         transcript.user("hi \x1b[32mgreen\x1b[0m")
-        transcript(data="Hello \x1b")
+        strands_callback(transcript)(data="Hello \x1b")
         self.assertEqual(transcript.tail(), ["• Hello"])
-        transcript(data="[31mWorld\x1b[0m and \x1b]52;c;ZXY=")
-        transcript(data="aWw=\x07done")
-        transcript(message={"content": [{"toolUse": {
+        strands_callback(transcript)(data="[31mWorld\x1b[0m and \x1b]52;c;ZXY=")
+        strands_callback(transcript)(data="aWw=\x07done")
+        strands_callback(transcript)(message={"content": [{"toolUse": {
             "toolUseId": "1", "name": "read\x1b[31m_file", "input": {"path": "a\x9b31mb.txt"},
         }}]})
-        transcript(message={"content": [{"toolResult": {
+        strands_callback(transcript)(message={"content": [{"toolResult": {
             "toolUseId": "1",
             "status": "success",
             "content": [{"text": "safe\x1b]0;pwned\x07\r\n\x1b[2Jline2"}],
@@ -282,10 +297,10 @@ class TranscriptTests(unittest.TestCase):
             rows = []
             transcript = Transcript(rows.extend, lambda: 20, color=True)
             transcript.user("First line wraps here\n\nSecond paragraph")
-            transcript(data="Agent reply wraps here")
+            strands_callback(transcript)(data="Agent reply wraps here")
             transcript.end_turn(0)
 
-            tui = AgentTui(
+            tui = build_tui(
                 lambda: SimpleNamespace(messages=[]),
                 output=DummyOutput(),
                 color=True,
@@ -347,7 +362,7 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn(f"\x1b[{DIM}m~~~sh\x1b[0m", joined)
 
         with mock.patch.dict(os.environ, {"COLORFGBG": "0;15"}):
-            light_cell = StreamCell(width=80, bullet="•", color=True, markdown=True)
+            light_cell = StreamCell(width=80, bullet="•", color=True, markdown=True, light=True)
             light_rows = light_cell.push("**bold**\n") + light_cell.finish()
         self.assertIn(f"\x1b[{BOLD_RED_LIGHT}mbold\x1b[0m", "\n".join(light_rows))
 
@@ -355,8 +370,8 @@ class TranscriptTests(unittest.TestCase):
         # Leading list suppresses duplicate assistant turn bullet on row 0.
         lead_rows = []
         lead = Transcript(lead_rows.extend, lambda: 34, color=False)
-        lead(
-            data=(
+        lead(TextDelta(
+            (
                 "*   **First**: wraps cleanly under the item text\n"
                 "    *   Nested star item that also wraps cleanly\n"
                 "        +   Third-level item\n"
@@ -368,7 +383,7 @@ class TranscriptTests(unittest.TestCase):
                 "* * *\n\n"
                 "Closing paragraph at root margin.\n"
             )
-        )
+        ))
         lead.end_turn(0)
 
         self.assertEqual(
@@ -408,7 +423,7 @@ class TranscriptTests(unittest.TestCase):
         for width in (78, 44, 22, 12):
             rows = []
             transcript = Transcript(rows.extend, lambda w=width: w, color=True)
-            transcript(data=md)
+            strands_callback(transcript)(data=md)
             transcript.end_turn(0)
             plain_rows = [
                 fragment_list_to_text(to_formatted_text(ANSI(row)))
@@ -439,7 +454,7 @@ class TranscriptTests(unittest.TestCase):
         # Prose containing pipes is not misidentified as a table.
         prose_rows = []
         prose = Transcript(prose_rows.extend, lambda: 60, color=False)
-        prose(data="Run cmd1 | cmd2 in bash\nNext line of output\n")
+        prose(TextDelta("Run cmd1 | cmd2 in bash\nNext line of output\n"))
         prose.end_turn(0)
         self.assertEqual(
             prose_rows,
@@ -461,14 +476,14 @@ class TranscriptTests(unittest.TestCase):
         )
         batch_rows = []
         batch = Transcript(batch_rows.extend, lambda: 52, color=True)
-        batch(data=doc)
+        batch(TextDelta(doc))
         batch.end_turn(0)
 
         streamed_rows = []
         saw_live_table = False
         streamed = Transcript(streamed_rows.extend, lambda: 52, color=True)
         for char in doc:
-            streamed(data=char)
+            streamed(TextDelta(char))
             tail = streamed.tail()
             for row in tail:
                 plain = fragment_list_to_text(to_formatted_text(ANSI(row)))
@@ -504,18 +519,18 @@ class TranscriptTests(unittest.TestCase):
         class HttpError(Exception):
             status_code = 502
 
-        transcript.invocation_failed(TimeoutError())
-        transcript.invocation_failed(APITimeoutError())
-        transcript.invocation_failed(APIConnectionError())
-        transcript.invocation_failed(HttpError())
-        transcript.invocation_failed(RuntimeError("internal detail"))
+        transcript.error(str(invocation_error(TimeoutError())))
+        transcript.error(str(invocation_error(APITimeoutError())))
+        transcript.error(str(invocation_error(APIConnectionError())))
+        transcript.error(str(invocation_error(HttpError())))
+        transcript.error(str(invocation_error(RuntimeError("internal detail"))))
 
         # Zero default usage from Strands should be ignored; real usage should sum.
-        transcript(message={"metadata": {"usage": {"inputTokens": 0, "outputTokens": 0}}})
+        strands_callback(transcript)(message={"metadata": {"usage": {"inputTokens": 0, "outputTokens": 0}}})
         transcript.end_turn(0.5)
         self.assertNotIn("in 0", "\n".join(rows))
 
-        transcript(
+        strands_callback(transcript)(
             message={
                 "metadata": {
                     "usage": {
@@ -539,8 +554,8 @@ class TranscriptTests(unittest.TestCase):
         agent = SimpleNamespace(
             event_loop_metrics=SimpleNamespace(accumulated_usage={"totalTokens": 1685})
         )
-        self.assertEqual(total_tokens(agent), 1685)
-        self.assertEqual(total_tokens(SimpleNamespace()), 0)
+        self.assertEqual(StrandsBackend(agent).total_tokens(), 1685)
+        self.assertEqual(StrandsBackend(SimpleNamespace()).total_tokens(), 0)
 
 
 class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
@@ -548,7 +563,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
         old_agent = SimpleNamespace(messages=[{"role": "user", "content": []}])
         new_agent = SimpleNamespace(messages=[])
         with tempfile.TemporaryDirectory() as tmp, create_pipe_input() as terminal:
-            tui = AgentTui(
+            tui = build_tui(
                 lambda: new_agent, agent=old_agent, input=terminal,
                 output=DummyOutput(), color=False, config_path=Path(tmp) / "settings.json",
             )
@@ -564,8 +579,8 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Previous question", rendered)
             self.assertNotIn("Previous response", rendered)
             self.assertIn("Started a new conversation.", rendered)
-            self.assertIs(tui.agent, new_agent)
-            self.assertEqual(tui.agent.messages, [])
+            self.assertEqual(new_agent.messages, [])
+            self.assertTrue(callable(new_agent.callback_handler))
             self.assertIsNone(tui._history.first_line)
             self.assertGreater(tui._header_len, 0)
 
@@ -589,7 +604,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
             config = Path(tmp) / "settings.json"
             save_pet("cat", config)
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     make_agent, agent=make_agent([previous_turn]), input=terminal,
                     output=DummyOutput(), color=False, config_path=config,
                 )
@@ -644,7 +659,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "settings.json"
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=DummyOutput(),
@@ -685,7 +700,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
             # Session 1: open interactive picker via /pet, arrow down to rabbit, confirm;
             # then test invalid pet and escape-cancel.
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=DummyOutput(),
@@ -734,7 +749,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
 
             # Session 2: starts with persisted rabbit, then switches directly to cat via /pet cat.
             with create_pipe_input() as terminal:
-                tui2 = AgentTui(
+                tui2 = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=DummyOutput(),
@@ -769,7 +784,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "settings.json"
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=DummyOutput(),
@@ -804,7 +819,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
             config = Path(tmp) / "settings.json"
             save_pet("cat", config)
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=output,
@@ -854,7 +869,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
             config = Path(tmp) / "settings.json"
             config.write_text('{"mouse_scroll_speed": 0.5}\n', encoding="utf-8")
             with create_pipe_input() as terminal:
-                tui = AgentTui(
+                tui = build_tui(
                     lambda: agent,
                     input=terminal,
                     output=vt_output,
@@ -936,7 +951,7 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
         buf = io.StringIO()
         vt_output = Vt100_Output(buf, lambda: Size(rows=12, columns=80))
         with tempfile.TemporaryDirectory() as tmp, create_pipe_input() as terminal:
-            tui = AgentTui(
+            tui = build_tui(
                 lambda: agent,
                 input=terminal,
                 output=vt_output,

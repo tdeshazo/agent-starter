@@ -68,8 +68,8 @@ device and does not silently fall back to CPU.
 
 Export overrides in the shell (no automatic `.env` loading). `DICTATION_ROOT`,
 `AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. `AGENT_PORT`
-updates both the server launcher and default client URL; set `AGENT_BASE_URL`
-to point the client at another host or endpoint.
+updates both the server launcher and default client URL. An empty value uses
+the default port. Set `AGENT_BASE_URL` to point the client at another host or endpoint.
 `python scripts/run_model.py --dry-run` prints the launch command without loading
 weights. Assets are never downloaded or modified on startup.
 
@@ -107,10 +107,16 @@ Agent setup lives in the `simple_agent` package:
 - `agent.py`: `create_agent()` wires the model, prompt, and tools together.
 - `prompts.py`: defines the built-in `SYSTEM_PROMPT`.
 - `tools.py`: add functions decorated with `@tool` and register them in `DEFAULT_TOOLS`.
+  Workspace filesystem access lives in `workspace_files.py`. Pure text selection
+  and search formatting live in `workspace_text.py`.
+- `conversation.py` manages turns, recovery, and reset for all three CLI modes.
+  `strands_backend.py` translates model events, metadata, and failures for that interface.
+- `preferences.py` owns preference validation. `settings.py` saves the existing
+  JSON format with an adjacent lock file so concurrent updates can merge.
 
 Import the factory with `from simple_agent import create_agent`. Each call creates
-fresh conversation state. `main.py` selects the interface, and `simple_agent/tui/`
-handles interactive input and transcript rendering.
+fresh conversation state. `simple_agent/cli.py` selects the interface, and
+`simple_agent/tui/` handles interactive input and transcript rendering.
 Keep tool argument types and docstrings explicit.
 
 - `search_text(query)` searches the current working directory recursively for a

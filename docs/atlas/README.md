@@ -1,6 +1,10 @@
 # Simple Agent — Interactive Codebase Atlas
 
-This directory contains a self-contained, locally hosted interactive Codebase Atlas generated against the repository source files without modifying application code.
+The diagrams, walkthroughs, and code excerpts describe the Git snapshot named
+in the page header. See the project README for the current module layout.
+The two atlas entry pages share the workspace tool simulator in
+`read-file-policy.js`. The simulator uses a virtual `/workspace` and supplied
+file metadata.
 
 ## Viewing Locally
 

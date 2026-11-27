@@ -1,10 +1,8 @@
 """Run the full-screen transcript, composer, and interactive turn lifecycle."""
 import asyncio
-import math
 import time
 from collections.abc import Callable
 from functools import cache
-from pathlib import Path
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
@@ -33,19 +31,13 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 from prompt_toolkit.styles import Style
 
-from ..prompts import SYSTEM_PROMPT
-from ..settings import (
-    DEFAULT_AGENT_NAME,
-    apply_agent_settings,
-    load_settings,
-    normalize_agent_name,
-    save_settings,
-)
+from ..conversation import Conversation, InvocationError
+from ..preferences import PET_NAMES, UserPreferences
 from .commands import COMMANDS, command_output, matching_commands, parse_slash_command
-from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
-from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
-from .session import conversation_turn, session_info, total_tokens
-from .terminal import light_background, use_color, use_true_color
+from .pets import PETS, pet_rows, pet_width
+from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, sgr, shimmer
+from .session import header_context, session_info
+from .terminal import use_color
 from .transcript import Transcript
 
 
@@ -53,17 +45,6 @@ PLACEHOLDER = "Ask the agent anything"
 ESCAPE_TIMEOUT = 0.1
 FRAME_INTERVAL = 0.08
 MOUSE_SCROLL_LINES = 3
-
-
-def _normalize_scroll_speed(value: object) -> float:
-    if (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value > 0
-    ):
-        return min(float(value), 20.0)
-    return 1.0
 
 
 class _WheelFallbackWindow(Window):
@@ -153,21 +134,19 @@ class AgentTui:
 
     def __init__(
         self,
-        agent_factory: Callable[[], object],
-        agent=None,
+        conversation: Conversation,
+        preferences: UserPreferences,
         *,
         input: Input | None = None,
         output: Output | None = None,
         color: bool | None = None,
-        config_path: Path | None = None,
     ):
-        self.agent_factory = agent_factory
+        self.conversation = conversation
+        self._header_context = header_context()
         self.color = use_color() if color is None else color
-        self.config_path = config_path
-        self.pet = load_pet(self.config_path)
-        self.mouse_scroll_speed = _normalize_scroll_speed(
-            load_settings(self.config_path).get("mouse_scroll_speed")
-        )
+        self.preferences = preferences
+        self.pet = preferences.pet()
+        self.mouse_scroll_speed = preferences.scroll_speed()
         self._scroll_remainder = 0.0
         self._header_len = 0
         self._header_width = 0
@@ -179,14 +158,13 @@ class AgentTui:
         self._system_prompt_buffer = Buffer(multiline=True)
         self.transcript = Transcript(self._emit, self._width, self.color)
         self._history = TranscriptControl(
-            self._tail_rows,
+            lambda: self.transcript.tail(separate_stream=True),
             on_width_change=self._sync_width,
             on_wheel=self._scroll_wheel,
             focusable=lambda: self._in_pager,
         )
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
-        self.agent = None
-        self._set_agent(agent if agent is not None else agent_factory())
+        self.conversation.observe(self.transcript)
         self.task: asyncio.Task | None = None
         self.turn_started = 0.0
         self.stop_requested = False
@@ -196,7 +174,7 @@ class AgentTui:
             key_bindings=merge_key_bindings([load_key_bindings(), self._bindings()]),
             style=Style.from_dict(
                 {
-                    "user": "#005f5f" if light_background() else "#afd7d7",
+                    "user": "#005f5f" if self.transcript.light else "#afd7d7",
                     "prompt": "bold ansicyan",
                     "placeholder": "ansibrightblack italic",
                 }
@@ -213,11 +191,6 @@ class AgentTui:
 
     # Agent and output plumbing
 
-    def _set_agent(self, agent) -> None:
-        apply_agent_settings(agent, self.config_path)
-        self.agent = agent
-        agent.callback_handler = self.transcript
-
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
@@ -228,17 +201,6 @@ class AgentTui:
     def _emit(self, lines: list[str]) -> None:
         self._history.rows.extend(lines)
         self.app.invalidate()
-
-    def _tail_rows(self) -> list[str]:
-        tail = self.transcript.tail()
-        if (
-            tail
-            and self.transcript.stream is not None
-            and not self.transcript._stream_opened
-            and self.transcript.stream.tail()
-        ):
-            return [""] + tail
-        return tail
 
     # Transcript overlay (Ctrl+T)
 
@@ -281,13 +243,11 @@ class AgentTui:
         self.app.invalidate()
 
     def _select_pet(self, name: str) -> None:
-        canonical = normalize_pet(name)
-        if canonical is None:
-            choices = ", ".join(PET_NAMES)
-            self.transcript.error(f"Unknown pet {name!r}. Choose from: {choices}.")
-            return
         try:
-            save_pet(canonical, self.config_path)
+            canonical = self.preferences.select_pet(name)
+        except ValueError as error:
+            self.transcript.error(str(error))
+            return
         except OSError as error:
             self.transcript.error(f"Could not save pet preference: {error}")
             return
@@ -298,8 +258,8 @@ class AgentTui:
     # Agent settings
 
     def _open_settings(self) -> None:
-        name = normalize_agent_name(getattr(self.agent, "name", None)) or DEFAULT_AGENT_NAME
-        prompt = getattr(self.agent, "system_prompt", SYSTEM_PROMPT) or ""
+        details = self.conversation.details()
+        name, prompt = details.name, details.system_prompt
         self._name_buffer.reset(Document(name, len(name)))
         self._system_prompt_buffer.reset(Document(prompt))
         self._settings_error = ""
@@ -311,19 +271,15 @@ class AgentTui:
         self.app.layout.focus(self._composer)
 
     def _save_agent_settings(self) -> None:
-        name = normalize_agent_name(self._name_buffer.text)
-        if name is None:
-            self._settings_error = "Enter a name on one line."
+        try:
+            self.conversation.update_preferences(self._name_buffer.text, self._system_prompt_buffer.text)
+        except ValueError as error:
+            self._settings_error = str(error)
             self.app.layout.focus(self._name_field)
             return
-        prompt = self._system_prompt_buffer.text
-        try:
-            save_settings({"agent_name": name, "system_prompt": prompt}, self.config_path)
         except OSError as error:
             self._settings_error = f"Could not save settings: {error.strerror or error}"
             return
-        self.agent.name = name
-        self.agent.system_prompt = prompt or None
         self._close_settings()
         self._refresh_header()
         self.transcript.info("Agent settings saved.")
@@ -332,12 +288,8 @@ class AgentTui:
         if self._header_len <= 0 or len(self._history.rows) < self._header_len:
             return
         target_width = self._width() if width is None else width
-        rows = header_cell(
-            width=target_width,
-            color=self.color,
-            true_color=use_true_color(),
-            pet=self.pet,
-            **session_info(self.agent),
+        rows = self.transcript.header_rows(
+            target_width, pet=self.pet, **session_info(self.conversation.details(), self._header_context),
         )
         self._history.rows[: self._header_len] = rows
         self._header_len = len(rows)
@@ -466,7 +418,7 @@ class AgentTui:
         )
 
     def _pager_status(self) -> str:
-        total = len(self._history.rows) + len(self._tail_rows())
+        total = len(self._history.rows) + len(self.transcript.tail(separate_stream=True))
         if not total:
             label = "Empty"
         elif self._history.first_line is None:
@@ -525,7 +477,7 @@ class AgentTui:
         description = PETS[selected_name].description
         desc_line = "  " + sgr(description, DIM, self.color)
 
-        art = pet_rows(selected_name, self.color, true_color=use_true_color())
+        art = pet_rows(selected_name, self.color, true_color=self.transcript.true_color)
         col_width = max(len(plain) for plain, _ in left) + 4
         if self._width() < col_width + pet_width(selected_name):
             return [styled for _, styled in left] + ["", desc_line]
@@ -561,7 +513,7 @@ class AgentTui:
         parts = []
         if not self._in_pager and self._history.first_line is not None:
             parts.append("↑ scrolled")
-        tokens = total_tokens(self.agent)
+        tokens = self.conversation.total_tokens()
         if tokens:
             parts.append(f"{format_tokens(tokens)} tokens used")
         return sgr(" · ".join(parts) + "  ", DIM, self.color) if parts else ""
@@ -821,7 +773,11 @@ class AgentTui:
             elif cmd.name == "/exit":
                 self.app.exit()
             elif cmd.name == "/clear":
-                self._set_agent(self.agent_factory())
+                try:
+                    self.conversation.reset()
+                except InvocationError as error:
+                    self.transcript.error(str(error))
+                    return
                 del self._history.rows[self._header_len :]
                 self._refresh_header()
                 self.transcript.info("Started a new conversation.")
@@ -832,7 +788,7 @@ class AgentTui:
                     self._open_pet_picker()
                 else:
                     self._select_pet(cmd.arg)
-            elif result := command_output(cmd.name, self.agent):
+            elif result := command_output(cmd.name, self.conversation):
                 self.transcript.info(result)
             return
         self.transcript.user(entered)
@@ -847,17 +803,15 @@ class AgentTui:
             self.task.cancel()
 
     async def _respond(self, prompt: str) -> None:
-        agent = self.agent
         stopped = False
         try:
-            with conversation_turn(agent.messages):
-                await agent.invoke_async(prompt)
+            await self.conversation.invoke_async(prompt)
         except asyncio.CancelledError:
             if not self.stop_requested:
                 raise
             stopped = True
-        except Exception as error:
-            self.transcript.invocation_failed(error)
+        except InvocationError as error:
+            self.transcript.error(str(error))
         finally:
             self.transcript.end_turn(time.monotonic() - self.turn_started, stopped)
             self.app.invalidate()
@@ -872,7 +826,8 @@ class AgentTui:
     def _header(self) -> None:
         start = len(self._history.rows)
         self._header_width = self._width()
-        self.transcript.header(pet=self.pet, **session_info(self.agent))
+        info = session_info(self.conversation.details(), self._header_context)
+        self.transcript.header(pet=self.pet, **info)
         self._header_len = len(self._history.rows) - start
 
     async def run_async(self) -> None:

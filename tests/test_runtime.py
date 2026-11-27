@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.run_model import main, model_command
+from simple_agent.agent import resolve_base_url
 
 
 class RuntimeTests(unittest.TestCase):
@@ -15,6 +16,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("--jinja", cmd)
         self.assertNotIn("--device", cmd)
         self.assertTrue(cmd[2].endswith("gemma-4-E4B-it-Q4_0.gguf"))
+
+    def test_empty_port_uses_same_default_for_server_and_client(self):
+        env = {"AGENT_PORT": ""}
+        cmd = model_command(env)
+        self.assertEqual(cmd[cmd.index("--port") + 1], "8088")
+        self.assertEqual(resolve_base_url(env), "http://127.0.0.1:8088/v1")
 
     def test_overrides(self):
         cmd = model_command({"AGENT_MODEL": "/tmp/model.gguf",

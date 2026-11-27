@@ -5,7 +5,14 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
+
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from simple_agent.config import MODEL_HOST, MODEL_ID, model_port  # noqa: E402
 
 
 def model_command(env, profile="default"):
@@ -20,8 +27,8 @@ def model_command(env, profile="default"):
     cache_type = env.get("AGENT_KV_CACHE_TYPE", "f16" if intel_profile else "q8_0")
     gpu_layers = "0" if cpu_only else env.get("AGENT_GPU_LAYERS", "8" if intel_profile else "99")
     command = [
-        str(binary), "-m", str(model), "--alias", "gemma-4-e4b",
-        "--host", "127.0.0.1", "--port", env.get("AGENT_PORT", "8088"),
+        str(binary), "-m", str(model), "--alias", MODEL_ID,
+        "--host", MODEL_HOST, "--port", model_port(env),
         "-ngl", gpu_layers,
         "-c", env.get("AGENT_CONTEXT_SIZE", "4096" if intel_profile else "8192"),
         "--flash-attn", env.get("AGENT_FLASH_ATTENTION", "auto" if intel_profile else "on"),

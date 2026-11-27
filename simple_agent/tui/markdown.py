@@ -3,8 +3,6 @@ import re
 
 from prompt_toolkit.utils import get_cwidth
 
-from .terminal import light_background
-
 BOLD = "1"
 DIM = "2"
 ITALIC = "3"
@@ -53,8 +51,8 @@ def sgr(text: str, codes: str, color: bool = True) -> str:
     return text
 
 
-def bold_markdown_style() -> str:
-    return BOLD_RED_LIGHT if light_background() else BOLD_RED
+def bold_markdown_style(light: bool = False) -> str:
+    return BOLD_RED_LIGHT if light else BOLD_RED
 
 
 def _split_sgr_tokens(codes: str) -> list[str]:
@@ -193,7 +191,7 @@ def _expand_atoms_plain(chunk: str, atoms: list[tuple[str, str]]) -> str:
     return PLACEHOLDER_RE.sub(lambda m: atoms[int(m.group(1))][0], chunk)
 
 
-def parse_inline(text: str, base_style: str = "") -> list[tuple[str, str]]:
+def parse_inline(text: str, base_style: str = "", *, light: bool = False) -> list[tuple[str, str]]:
     """Parse inline Markdown spans into ``(plain_text, sgr_style)`` segments."""
     if not text:
         return []
@@ -213,7 +211,7 @@ def parse_inline(text: str, base_style: str = "") -> list[tuple[str, str]]:
         return f"\ue000{idx}\ue001"
 
     masked = ATOM_RE.sub(replace_atom, text)
-    strong_style = bold_markdown_style()
+    strong_style = bold_markdown_style(light)
     strong_italic_style = combine_sgr(strong_style, ITALIC)
 
     def parse_masked(segment: str, style: str) -> list[tuple[str, str]]:
@@ -317,6 +315,8 @@ def render_markdown_line(
     list_stack: list[tuple[int, int]],
     quote_list_stack: list[tuple[int, int]],
     color: bool = True,
+    *,
+    light: bool = False,
 ) -> tuple[list[str], bool]:
     """Render a single non-fence, non-table Markdown line.
 
@@ -337,7 +337,7 @@ def render_markdown_line(
             quote_list_stack.clear()
             return [sgr(("│ " * eff_depth).rstrip(), DIM, color)], False
         inner_width = max(width - 2 * eff_depth, 1)
-        inner_rows, _ = render_markdown_line(inner, inner_width, quote_list_stack, [], color)
+        inner_rows, _ = render_markdown_line(inner, inner_width, quote_list_stack, [], color, light=light)
         return [bar + row for row in inner_rows], False
 
     quote_list_stack.clear()
@@ -348,7 +348,7 @@ def render_markdown_line(
 
     if heading_match := ATX_HEADING.match(expanded):
         list_stack.clear()
-        spans = parse_inline(heading_match.group(3), base_style=BOLD)
+        spans = parse_inline(heading_match.group(3), base_style=BOLD, light=light)
         if not spans:
             return [], False
         return [styled for styled, _ in wrap_spans(spans, width, color)], False
@@ -370,7 +370,7 @@ def render_markdown_line(
         rest_prefix = " " * hang_width
         if not body.strip():
             return [first_prefix.rstrip()], True
-        spans = parse_inline(body)
+        spans = parse_inline(body, light=light)
         wrapped = wrap_spans(spans, max(width - hang_width, 1), color)
         rows = [
             (first_prefix if idx == 0 else rest_prefix) + styled
@@ -397,7 +397,7 @@ def render_markdown_line(
         rest_prefix = " " * eff_hang
         if not body.strip():
             return [first_prefix.rstrip()], True
-        spans = parse_inline(body)
+        spans = parse_inline(body, light=light)
         wrapped = wrap_spans(spans, max(width - eff_hang, 1), color)
         rows = [
             (first_prefix if idx == 0 else rest_prefix) + styled
@@ -411,12 +411,12 @@ def render_markdown_line(
             list_stack.pop()
         hang_width = min(list_stack[-1][1], max(width - 4, 0))
         prefix = " " * hang_width
-        spans = parse_inline(expanded.lstrip(" "))
+        spans = parse_inline(expanded.lstrip(" "), light=light)
         wrapped = wrap_spans(spans, max(width - hang_width, 1), color)
         return [prefix + styled for styled, _ in wrapped], True
 
     list_stack.clear()
-    spans = parse_inline(expanded)
+    spans = parse_inline(expanded, light=light)
     return [styled for styled, _ in wrap_spans(spans, width, color)], False
 
 
@@ -593,7 +593,7 @@ def _split_cell_lines(raw_cell: str) -> list[str]:
 
 
 def _parse_cell_sublines(
-    raw_cell: str, base_style: str, color: bool
+    raw_cell: str, base_style: str, color: bool, light: bool
 ) -> list[tuple[str, int, list[tuple[str, str]]]]:
     """Parse cell lines into ``(styled_prefix, prefix_width, spans)`` tuples."""
     parsed: list[tuple[str, int, list[tuple[str, str]]]] = []
@@ -604,17 +604,19 @@ def _parse_cell_sublines(
                 checked = task_match.group(1) in {"x", "X"}
                 mark_style = combine_sgr(base_style, BOLD if checked else DIM)
                 prefix = sgr("☑" if checked else "☐", mark_style, color) + " "
-                parsed.append((prefix, 2, parse_inline(task_match.group(3), base_style=base_style)))
+                spans = parse_inline(task_match.group(3), base_style=base_style, light=light)
+                parsed.append((prefix, 2, spans))
                 continue
             prefix = sgr("• ", base_style, color)
-            parsed.append((prefix, 2, parse_inline(body, base_style=base_style)))
+            parsed.append((prefix, 2, parse_inline(body, base_style=base_style, light=light)))
         elif task_match := TASK_ITEM.match(sub):
             checked = task_match.group(1) in {"x", "X"}
             mark_style = combine_sgr(base_style, BOLD if checked else DIM)
             prefix = sgr("☑" if checked else "☐", mark_style, color) + " "
-            parsed.append((prefix, 2, parse_inline(task_match.group(3), base_style=base_style)))
+            spans = parse_inline(task_match.group(3), base_style=base_style, light=light)
+            parsed.append((prefix, 2, spans))
         else:
-            parsed.append(("", 0, parse_inline(sub, base_style=base_style)))
+            parsed.append(("", 0, parse_inline(sub, base_style=base_style, light=light)))
     return parsed or [("", 0, [])]
 
 
@@ -682,7 +684,9 @@ def _align_cell(styled: str, vis_width: int, col_width: int, alignment: str) -> 
     return styled + " " * pad
 
 
-def render_table(table_lines: list[str], width: int, color: bool = True) -> list[str]:
+def render_table(
+    table_lines: list[str], width: int, color: bool = True, *, light: bool = False
+) -> list[str]:
     """Render a GFM pipe table with rounded borders, alignment, and cell wrapping."""
     if len(table_lines) < 2:
         return []
@@ -702,9 +706,9 @@ def render_table(table_lines: list[str], width: int, color: bool = True) -> list
             cells = cells[:col_count]
         body_raw_rows.append(cells)
 
-    header_cells = [_parse_cell_sublines(cell, BOLD, color) for cell in header_raw]
+    header_cells = [_parse_cell_sublines(cell, BOLD, color, light) for cell in header_raw]
     body_cells = [
-        [_parse_cell_sublines(cell, "", color) for cell in row]
+        [_parse_cell_sublines(cell, "", color, light) for cell in row]
         for row in body_raw_rows
     ]
 
@@ -719,7 +723,7 @@ def render_table(table_lines: list[str], width: int, color: bool = True) -> list
                 label = header_raw[col_idx]
                 entry = f"**{label}**: {value}" if body_raw_rows and label else (value or label)
                 if entry:
-                    spans = parse_inline(entry)
+                    spans = parse_inline(entry, light=light)
                     stacked.extend(styled for styled, _ in wrap_spans(spans, width, color))
         return stacked
 

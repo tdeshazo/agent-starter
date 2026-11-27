@@ -1,44 +1,12 @@
-"""Read session metadata for the terminal header and status line."""
+"""Collect terminal header context and format its session details."""
+
 import os
-from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
-from urllib.parse import urlsplit
 
-from ..settings import DEFAULT_AGENT_NAME, normalize_agent_name
-
-
-@contextmanager
-def conversation_turn(messages: list):
-    """Restore the conversation history when a turn fails or is interrupted."""
-    history = messages.copy()
-    try:
-        yield
-    except BaseException:
-        messages[:] = history
-        raise
+from ..conversation import SessionDetails
 
 
-def session_model_id(agent) -> str | None:
-    """Read the model ID reported by the active model."""
-    try:
-        return agent.model.get_config().get("model_id")
-    except Exception:
-        return None
-
-
-def session_info(agent) -> dict:
-    """Describe the agent's model and endpoint for the header box."""
-    model = getattr(agent, "model", None)
-    base_url = (getattr(model, "client_args", None) or {}).get("base_url")
-    endpoint = None
-    if base_url:
-        try:
-            parts = urlsplit(base_url)
-        except ValueError:
-            pass
-        else:
-            host = parts.netloc.rsplit("@", 1)[-1]
-            endpoint = host + parts.path.rstrip("/")
+def header_context() -> dict[str, str | None]:
     directory = os.getcwd()
     home = os.path.expanduser("~")
     if directory == home or directory.startswith(home + os.sep):
@@ -47,17 +15,15 @@ def session_info(agent) -> dict:
         app_version = version("simple-agent")
     except PackageNotFoundError:
         app_version = None
+    return {"directory": directory, "app_version": app_version}
+
+
+def session_info(
+    details: SessionDetails, context: dict[str, str | None] | None = None
+) -> dict[str, str | None]:
     return {
-        "model": session_model_id(agent),
-        "endpoint": endpoint,
-        "directory": directory,
-        "app_version": app_version,
-        "agent_name": normalize_agent_name(getattr(agent, "name", None)) or DEFAULT_AGENT_NAME,
+        **(header_context() if context is None else context),
+        "model": details.model,
+        "endpoint": details.endpoint,
+        "agent_name": details.name,
     }
-
-
-def total_tokens(agent) -> int:
-    try:
-        return int(agent.event_loop_metrics.accumulated_usage.get("totalTokens", 0))
-    except Exception:
-        return 0

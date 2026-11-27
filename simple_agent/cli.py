@@ -1,17 +1,18 @@
 """Command-line interface for the local Gemma agent."""
 import argparse
-from collections.abc import Callable, Sequence
 import os
-from pathlib import Path
 import shutil
 import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
 
-from .agent import create_agent
-from .settings import apply_agent_settings
-from .tui import PET_NAMES, AgentTui, interactive_terminal, run_plain, save_pet
+from .agent import create_agent, create_conversation
+from .conversation import InvocationError
+from .preferences import PET_NAMES
+from .settings import open_preferences
+from .tui import AgentTui, interactive_terminal, run_plain
 from .tui.rendering import error_cell
-from .tui.session import conversation_turn
-from .tui.transcript import INTERRUPTED, format_invocation_error
+from .tui.transcript import INTERRUPTED
 
 
 def _stderr_color() -> bool:
@@ -39,31 +40,29 @@ def run_cli(
         help=f"Select and save the header pet ({', '.join(PET_NAMES)})",
     )
     args = parser.parse_args(argv)
+    preferences = open_preferences(config_path)
     if args.pet:
         try:
-            save_pet(args.pet, config_path)
+            preferences.select_pet(args.pet)
         except OSError as error:
             _write_stderr_error(f"Could not save pet preference: {error.strerror or error}")
             return 1
-    if args.prompt:
-        agent = agent_factory()
-        apply_agent_settings(agent, config_path)
-        try:
-            with conversation_turn(getattr(agent, "messages", [])):
-                agent(args.prompt)
-        except KeyboardInterrupt:
-            sys.stderr.write("\n")
-            _write_stderr_error(INTERRUPTED)
-            return 130
-        except Exception as error:
-            _write_stderr_error(format_invocation_error(error))
-            return 1
-        print()
-        return 0
-    if interactive_terminal():
-        AgentTui(agent_factory, config_path=config_path).run()
-    else:
-        run_plain(agent_factory, config_path=config_path)
+    try:
+        conversation = create_conversation(agent_factory, preferences)
+        if args.prompt:
+            conversation.invoke(args.prompt)
+            print()
+        elif interactive_terminal():
+            AgentTui(conversation, preferences).run()
+        else:
+            run_plain(conversation, preferences)
+    except KeyboardInterrupt:
+        sys.stderr.write("\n")
+        _write_stderr_error(INTERRUPTED)
+        return 130
+    except InvocationError as error:
+        _write_stderr_error(str(error))
+        return 1
     return 0
 
 

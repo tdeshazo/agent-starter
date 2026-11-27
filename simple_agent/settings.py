@@ -1,12 +1,14 @@
 """Read and persist user preferences shared by the application entry points."""
+import fcntl
 import json
 import os
 import tempfile
-import unicodedata
+from functools import partial
 from pathlib import Path
 
-
-DEFAULT_AGENT_NAME = "Simple Agent"
+from .preferences import DEFAULT_AGENT_NAME as DEFAULT_AGENT_NAME
+from .preferences import UserPreferences, apply_preferences
+from .preferences import normalize_agent_name as normalize_agent_name
 
 
 def settings_path() -> Path:
@@ -34,9 +36,16 @@ def load_settings(path: Path | None = None) -> dict:
 def save_settings(updates: dict, path: Path | None = None) -> None:
     """Merge preferences into the existing file and replace it atomically."""
     target = path if path is not None else settings_path()
-    data = _read_settings(target)
-    data.update(updates)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Lock a stable file because os.replace changes the settings file's inode.
+    with target.with_name(target.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = _read_settings(target)
+        data.update(updates)
+        _replace_settings(target, data)
+
+
+def _replace_settings(target: Path, data: dict) -> None:
     payload = json.dumps(data, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".settings-", suffix=".tmp")
     try:
@@ -47,20 +56,19 @@ def save_settings(updates: dict, path: Path | None = None) -> None:
         Path(tmp_name).unlink(missing_ok=True)
 
 
-def normalize_agent_name(value: object) -> str | None:
-    """Accept a nonempty, single-line name suitable for display in the terminal."""
-    if not isinstance(value, str):
-        return None
-    name = value.strip()
-    if not name or any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"} for char in name):
-        return None
-    return name
+def open_preferences(path: Path | None = None) -> UserPreferences:
+    target = path if path is not None else settings_path()
+    return UserPreferences(partial(load_settings, target), partial(save_settings, path=target))
 
 
 def apply_agent_settings(agent, path: Path | None = None) -> None:
     """Apply saved overrides to an agent, keeping its defaults for missing entries."""
-    data = load_settings(path)
-    if name := normalize_agent_name(data.get("agent_name")):
-        agent.name = name
-    if isinstance(prompt := data.get("system_prompt"), str):
-        agent.system_prompt = prompt or None
+    apply_preferences(agent, open_preferences(path).agent())
+
+
+def load_pet(path: Path | None = None) -> str:
+    return open_preferences(path).pet()
+
+
+def save_pet(pet: str, path: Path | None = None) -> str:
+    return open_preferences(path).select_pet(pet)

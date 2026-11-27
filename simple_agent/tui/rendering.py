@@ -5,7 +5,8 @@ import unicodedata
 
 from prompt_toolkit.utils import get_cwidth
 
-from ..settings import DEFAULT_AGENT_NAME
+from ..conversation import ToolResult
+from ..preferences import DEFAULT_AGENT_NAME, DEFAULT_PET
 from .markdown import (
     BOLD,
     BOLD_RED,
@@ -29,8 +30,7 @@ from .markdown import (
     split_width,
     wrap_ranges,
 )
-from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
-from .terminal import light_background
+from .pets import PET_GAP, pet_rows, pet_width
 
 
 TOOL_RESULT_LINES = 3
@@ -90,11 +90,7 @@ ANSI_ESCAPE = re.compile(
 INCOMPLETE_ANSI = re.compile(
     r"(?:\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*|[P^_][^\x1b]*)?|\x9b[0-?]*[ -/]*)\Z"
 )
-TOKEN_USAGE_FIELDS = (
-    ("inputTokens", "in"),
-    ("cacheReadInputTokens", "cached"),
-    ("outputTokens", "out"),
-)
+TOKEN_USAGE_FIELDS = (("input", "in"), ("cache_read", "cached"), ("output", "out"))
 
 
 def sanitize_text(text: str, *, multiline: bool = True) -> str:
@@ -239,13 +235,13 @@ def session_box(
     return lines
 
 
-def user_text_style() -> str:
-    return USER_TEXT_LIGHT if light_background() else USER_TEXT
+def user_text_style(light: bool = False) -> str:
+    return USER_TEXT_LIGHT if light else USER_TEXT
 
 
-def user_cell(text: str, width: int, color: bool = True) -> list[str]:
+def user_cell(text: str, width: int, color: bool = True, *, light: bool = False) -> list[str]:
     clean = sanitize_text(text)
-    style = user_text_style()
+    style = user_text_style(light)
     rows = [
         sgr(row, style, color)
         for line in clean.strip("\n").split("\n")
@@ -266,22 +262,14 @@ def tool_call_rows(name: str, tool_input, width: int, color: bool = True, verb: 
     return _prefixed(rows, "• ", "  ")
 
 
-def tool_result_rows(result: dict, width: int, color: bool = True) -> list[str]:
-    parts = []
-    for block in result.get("content", []):
-        if "text" in block:
-            parts.append(sanitize_text(str(block["text"])))
-        elif "json" in block:
-            parts.append(sanitize_text(json.dumps(block["json"], ensure_ascii=False)))
-        else:
-            kind = sanitize_text(str(next(iter(block), "content")), multiline=False)
-            parts.append(f"[{kind}]")
-    lines = [line for line in "\n".join(parts).splitlines() if line.strip()] or ["(no output)"]
+def tool_result_rows(result: ToolResult, width: int, color: bool = True) -> list[str]:
+    text = "\n".join(sanitize_text(part) for part in result.parts)
+    lines = [line for line in text.splitlines() if line.strip()] or ["(no output)"]
     shown = lines[:TOOL_RESULT_LINES]
     hidden = len(lines) - len(shown)
     if hidden:
         shown.append(f"… +{hidden} lines")
-    style = RED if result.get("status") == "error" else DIM
+    style = RED if result.failed else DIM
     rows = [truncate(line, width - 4) for line in shown]
     return [
         "  " + sgr("└ " if index == 0 else "  ", DIM, color) + sgr(row, style, color)
@@ -320,12 +308,15 @@ class StreamCell:
         style: str = "",
         color: bool = True,
         markdown: bool = False,
+        *,
+        light: bool = False,
     ):
         self.width = max(width - 2, 1)
         self.bullet = bullet
         self.style = style
         self.color = color
         self.markdown = markdown
+        self.light = light
         self.line = ""
         self.committed = 0
         self.started = False
@@ -381,7 +372,7 @@ class StreamCell:
         self._list_indents.clear()
         self._quote_list_indents.clear()
         return self._emit_rendered(
-            render_table(lines, self.width, self.color),
+            render_table(lines, self.width, self.color, light=self.light),
             suppress_bullet=True,
         )
 
@@ -400,7 +391,7 @@ class StreamCell:
                 self.blank_rows += 1
             return []
         rendered, suppress = render_markdown_line(
-            line, self.width, self._list_indents, self._quote_list_indents, self.color
+            line, self.width, self._list_indents, self._quote_list_indents, self.color, light=self.light,
         )
         return self._emit_rendered(rendered, suppress_bullet=suppress)
 
@@ -496,23 +487,23 @@ class StreamCell:
             if fence is not None:
                 return preview_emit(wrap(line, self.width))
             rendered, suppress = render_markdown_line(
-                line, self.width, list_indents, quote_indents, self.color
+                line, self.width, list_indents, quote_indents, self.color, light=self.light,
             )
             return preview_emit(rendered, suppress_bullet=suppress)
 
         if len(self._table_lines) >= 2:
             if not self.line.strip() or self.line.strip() == "|":
                 return preview_emit(
-                    render_table(self._table_lines, self.width, self.color),
+                    render_table(self._table_lines, self.width, self.color, light=self.light),
                     suppress_bullet=True,
                 )
             if is_table_body_row(self.line):
                 return preview_emit(
-                    render_table(self._table_lines + [self.line], self.width, self.color),
+                    render_table(self._table_lines + [self.line], self.width, self.color, light=self.light),
                     suppress_bullet=True,
                 )
             out = preview_emit(
-                render_table(self._table_lines, self.width, self.color),
+                render_table(self._table_lines, self.width, self.color, light=self.light),
                 suppress_bullet=True,
             )
             list_indents.clear()
@@ -524,7 +515,9 @@ class StreamCell:
             header_cells, _ = split_table_cells(self._table_lines[0])
             if self.line.strip() and parse_table_alignments(self.line, len(header_cells)) is not None:
                 return preview_emit(
-                    render_table([self._table_lines[0], self.line], self.width, self.color),
+                    render_table(
+                        [self._table_lines[0], self.line], self.width, self.color, light=self.light,
+                    ),
                     suppress_bullet=True,
                 )
             out = preview_non_table(self._table_lines[0])
@@ -570,5 +563,7 @@ def format_tokens(count: int) -> str:
 
 
 def usage_cell(usage: dict[str, int], width: int, color: bool = True) -> list[str]:
-    label = " · ".join(f"{label} {format_tokens(usage[key])}" for key, label in TOKEN_USAGE_FIELDS if key in usage)
+    label = " · ".join(
+        f"{label} {format_tokens(usage[key])}" for key, label in TOKEN_USAGE_FIELDS if key in usage
+    )
     return ["  " + sgr(row, DIM, color) for row in wrap(label, width - 2)]

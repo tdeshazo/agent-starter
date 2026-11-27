@@ -1006,6 +1006,9 @@ code, pre { font-family: var(--mono); }
     </div>
   </section>
 
+  <p class="muted">The architecture and code excerpts describe a historical snapshot.
+    See the project README for the current module layout.</p>
+
   <!-- ==================== VIEW 2: INTERACTIVE EXPLANATIONS ==================== -->
   <section id="view-labs" class="view-section">
     <div class="atlas-intro">
@@ -1176,8 +1179,7 @@ code, pre { font-family: var(--mono); }
         <div>
           <h2>Lab 3: Sandboxed Workspace Tools &amp; Byte-Budget Pipeline (<code>tools.py</code>)</h2>
           <p>
-            Test any path, line range, file type, or literal search against the 7-stage defense-in-depth pipeline
-            used by <code>read_file()</code> and <code>search_text()</code>.
+            Simulate a <code>read_file()</code> call from <code>/workspace</code> and inspect the <code>search_text()</code> budgets.
           </p>
         </div>
       </div>
@@ -1192,7 +1194,7 @@ code, pre { font-family: var(--mono); }
           <span class="chip" onclick="applyToolPreset('env_example')">.env.example (Allowed Template)</span>
           <span class="chip" onclick="applyToolPreset('git')">.git/config (Blocked .git)</span>
           <span class="chip" onclick="applyToolPreset('outside')">../dictation/secret.txt (Outside CWD)</span>
-          <span class="chip" onclick="applyToolPreset('symlink')">escape_link.txt (Symlink O_NOFOLLOW)</span>
+          <span class="chip" onclick="applyToolPreset('symlink')">escape_link.txt (Symlink Outside Workspace)</span>
           <span class="chip" onclick="applyToolPreset('fifo')">pipe.fifo (FIFO Special File)</span>
         </div>
       </div>
@@ -1218,14 +1220,18 @@ code, pre { font-family: var(--mono); }
             <option value="2097152">2.0 MiB (> 1 MiB)</option>
           </select>
         </div>
+        <div class="form-field" style="width:135px;">
+          <label for="tool-selected">Selected Range Bytes</label>
+          <input type="number" id="tool-selected" min="0" oninput="evaluateToolSandbox()">
+        </div>
         <div class="form-field" style="width:185px;">
           <label>Filesystem Entry Type</label>
           <select id="tool-ftype" onchange="evaluateToolSandbox()">
             <option value="regular">Regular UTF-8 File</option>
-            <option value="symlink_out">Symlink -> Outside CWD</option>
+            <option value="symlink_outside">Symlink -> Outside CWD</option>
             <option value="symlink_in">Symlink -> Inside CWD</option>
             <option value="fifo">Named Pipe (FIFO)</option>
-            <option value="directory">Directory</option>
+            <option value="dir">Directory</option>
             <option value="binary">Binary / Invalid UTF-8</option>
           </select>
         </div>
@@ -1239,7 +1245,7 @@ code, pre { font-family: var(--mono); }
             <div id="tool-outcome" style="font-family:var(--mono); font-size:12.5px;"></div>
           </div>
           <div class="state-box">
-            <h4><code>search_text</code> Resource Budgets (<code>tools.py:16-24</code>)</h4>
+            <h4><code>search_text</code> Resource Budgets (<code>workspace_files.py</code> and <code>workspace_text.py</code>)</h4>
             <div class="kv-grid">
               <span class="kv-key">MAX_SEARCH_MATCHES</span><span class="kv-val">20 rows</span>
               <span class="kv-key">MAX_SEARCH_RESULT_BYTES</span><span class="kv-val">4,096 B (reserves 66 B for incomplete notice)</span>
@@ -1402,6 +1408,7 @@ code, pre { font-family: var(--mono); }
 
 </main>
 
+<script src="atlas/read-file-policy.js"></script>
 <script>
 const ATLAS = {
   "project": {
@@ -4522,13 +4529,13 @@ function renderStreamSim() {
 function applyToolPreset(kind) {
   const presets = {
     ok: { path: "simple_agent/agent.py", s: "", e: "", size: "1800", ftype: "regular" },
-    range: { path: "simple_agent/tui/app.py", s: "25", e: "35", size: "204800", ftype: "regular" },
+    range: { path: "simple_agent/tui/app.py", s: "25", e: "35", size: "204800", selected: 2048, ftype: "regular" },
     toobig: { path: "simple_agent/tui/app.py", s: "", e: "", size: "204800", ftype: "regular" },
     env_secret: { path: ".env.local", s: "", e: "", size: "1800", ftype: "regular" },
     env_example: { path: ".env.example", s: "", e: "", size: "1800", ftype: "regular" },
     git: { path: ".git/config", s: "", e: "", size: "1800", ftype: "regular" },
     outside: { path: "../dictation/secret.txt", s: "", e: "", size: "1800", ftype: "regular" },
-    symlink: { path: "escape_link.txt", s: "", e: "", size: "1800", ftype: "symlink_out" },
+    symlink: { path: "escape_link.txt", s: "", e: "", size: "1800", ftype: "symlink_outside" },
     fifo: { path: "pipe.fifo", s: "", e: "", size: "1800", ftype: "fifo" },
   };
   const p = presets[kind];
@@ -4536,133 +4543,38 @@ function applyToolPreset(kind) {
   document.getElementById("tool-start").value = p.s;
   document.getElementById("tool-end").value = p.e;
   document.getElementById("tool-size").value = p.size;
+  document.getElementById("tool-selected").value = p.selected ?? "";
   document.getElementById("tool-ftype").value = p.ftype;
   evaluateToolSandbox();
 }
 
 function evaluateToolSandbox() {
-  const rawPath = document.getElementById("tool-path").value.trim();
-  const sRaw = document.getElementById("tool-start").value.trim();
-  const eRaw = document.getElementById("tool-end").value.trim();
-  const size = Number(document.getElementById("tool-size").value);
-  const ftype = document.getElementById("tool-ftype").value;
-
-  const hasS = sRaw !== "", hasE = eRaw !== "";
-  const sNum = Number(sRaw), eNum = Number(eRaw);
-
-  const gates = [];
-  let failed = null;
-
-  // Gate 1: Line range validation
-  if (hasS !== hasE) {
-    failed = "ValueError: Provide both start_line and end_line together.";
-    gates.push({ status: "fail", title: "1. Line-Range Endpoint Pair Check (tools.py:95-99)", detail: failed });
-  } else if (hasS && (!Number.isInteger(sNum) || !Number.isInteger(eNum) || sNum < 1 || sNum > eNum)) {
-    failed = "ValueError: Line numbers must be positive integers with start_line at most end_line.";
-    gates.push({ status: "fail", title: "1. Line-Range Endpoint Pair Check (tools.py:95-99)", detail: failed });
-  } else {
-    gates.push({
-      status: "pass",
-      title: "1. Line-Range Endpoint Pair Check (tools.py:95-99)",
-      detail: hasS ? `Valid inclusive line slice [${sNum}..${eNum}].` : "Whole-file read mode (start_line=None, end_line=None)."
-    });
-  }
-
-  // Normalize relative segments
-  const segs = [];
-  let escapedRoot = rawPath.startsWith("/");
-  for (const part of rawPath.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      if (segs.length === 0) escapedRoot = true;
-      else segs.pop();
-    } else {
-      segs.push(part);
-    }
-  }
-  if (ftype === "symlink_out") escapedRoot = true;
-
-  // Gate 2: Workspace root containment
-  if (failed) {
-    gates.push({ status: "skip", title: "2. Workspace Root Containment (tools.py:101-107)", detail: "Skipped due to earlier error." });
-  } else if (escapedRoot) {
-    failed = `ValueError: Path '${rawPath}' is outside the working directory.`;
-    gates.push({ status: "fail", title: "2. Workspace Root Containment (tools.py:101-107)", detail: failed });
-  } else if (segs.length === 0) {
-    failed = `ValueError: Expected a regular file at '${rawPath}'.`;
-    gates.push({ status: "fail", title: "2. Workspace Root Containment (tools.py:108-110)", detail: failed });
-  } else {
-    gates.push({ status: "pass", title: "2. Workspace Root Containment (tools.py:101-110)", detail: `Resolved inside $PWD -> rel_parts = (${segs.map(s => `'${s}'`).join(", ")})` });
-  }
-
-  // Gate 3: Sensitive file filter
-  const allowedEnv = new Set([".env.example", ".env.sample", ".env.template"]);
-  const last = segs[segs.length - 1] || "";
-  const isSens = segs.includes(".git") || last === ".env" || (last.startsWith(".env.") && !allowedEnv.has(last));
-  if (failed) {
-    gates.push({ status: "skip", title: "3. Sensitive Dotfile & .git Guard (tools.py:32-36, 111)", detail: "Skipped." });
-  } else if (isSens) {
-    failed = `ValueError: Reading sensitive file '${rawPath}' is not allowed.`;
-    gates.push({ status: "fail", title: "3. Sensitive Dotfile & .git Guard (tools.py:32-36, 111)", detail: failed });
-  } else {
-    gates.push({
-      status: "pass",
-      title: "3. Sensitive Dotfile & .git Guard (tools.py:32-36, 111)",
-      detail: allowedEnv.has(last) ? `Allowed template '${last}' in ALLOWED_ENV_FILES.` : "Not in .git and not a secret .env* file."
-    });
-  }
-
-  // Gate 4: O_NOFOLLOW + S_ISREG descriptor walk
-  if (failed) {
-    gates.push({ status: "skip", title: "4. dir_fd + O_NOFOLLOW + S_ISREG Check (tools.py:57-71)", detail: "Skipped." });
-  } else if (ftype === "symlink_in") {
-    failed = "OSError(ELOOP) / ValueError: Blocked symlink via O_NOFOLLOW / follow_symlinks=False.";
-    gates.push({ status: "fail", title: "4. dir_fd + O_NOFOLLOW + S_ISREG Check (tools.py:57-71)", detail: failed });
-  } else if (ftype === "fifo" || ftype === "directory") {
-    failed = `ValueError: Expected a regular file at '${rawPath}'. (Opened with O_NONBLOCK so FIFOs never hang!)`;
-    gates.push({ status: "fail", title: "4. dir_fd + O_NOFOLLOW + S_ISREG Check (tools.py:57-71)", detail: failed });
-  } else {
-    gates.push({ status: "pass", title: "4. dir_fd + O_NOFOLLOW + S_ISREG Check (tools.py:57-71)", detail: "Traversed parent dir_fds with O_PATH | O_NOFOLLOW; verified S_ISREG via fstat(fd)." });
-  }
-
-  // Gate 5: Byte budget check
-  const limit = hasS ? 1048576 : 4096;
-  if (failed) {
-    gates.push({ status: "skip", title: "5. Read Byte-Budget Gate (tools.py:114-125)", detail: "Skipped." });
-  } else if (size > limit) {
-    failed = `ValueError: File exceeds the ${limit}-byte read limit.`;
-    gates.push({ status: "fail", title: "5. Read Byte-Budget Gate (tools.py:114-118)", detail: `${failed} (Tip: pass start_line & end_line for files up to 1 MiB!)` });
-  } else {
-    gates.push({
-      status: "pass",
-      title: "5. Read Byte-Budget Gate (tools.py:114-125)",
-      detail: `Read ${size.toLocaleString()} bytes <= ${limit.toLocaleString()}-byte ${hasS ? 'candidate' : 'whole-file'} limit (output slice capped at 4,096 B).`
-    });
-  }
-
-  // Gate 6: UTF-8 decode
-  if (failed) {
-    gates.push({ status: "skip", title: "6. Strict UTF-8 Decode (tools.py:120)", detail: "Skipped." });
-  } else if (ftype === "binary") {
-    failed = "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff...";
-    gates.push({ status: "fail", title: "6. Strict UTF-8 Decode (tools.py:120)", detail: failed });
-  } else {
-    gates.push({ status: "pass", title: "6. Strict UTF-8 Decode (tools.py:120)", detail: "Decoded clean UTF-8 text and returned string to Strands tool loop." });
-  }
+  const selected = document.getElementById("tool-selected").value;
+  const gates = evaluateAtlasReadFile({
+    path: document.getElementById("tool-path").value,
+    start: document.getElementById("tool-start").value,
+    end: document.getElementById("tool-end").value,
+    size: Number(document.getElementById("tool-size").value),
+    kind: document.getElementById("tool-ftype").value,
+    selectedBytes: selected === "" ? null : Number(selected),
+  });
+  const outcome = gates[gates.length - 1];
 
   document.getElementById("tool-gates").innerHTML = gates.map(g => `
     <div class="gate-row ${g.status}">
       <span class="gate-status">${g.status.toUpperCase()}</span>
       <div>
-        <div style="font-weight:700; font-size:13px;">${escapeHtml(g.title)}</div>
+        <div style="font-weight:700; font-size:13px;">${escapeHtml(g.gate)}</div>
         <div style="font-size:12px; color:var(--text-dim); font-family:var(--mono); margin-top:2px;">${escapeHtml(g.detail)}</div>
       </div>
     </div>
   `).join("");
 
-  document.getElementById("tool-outcome").innerHTML = failed
-    ? `<span style="color:var(--err); font-weight:700;">✗ BLOCKED</span><br><br>${escapeHtml(failed)}`
-    : `<span style="color:var(--ok); font-weight:700;">✓ ALLOWED</span><br><br>Returns UTF-8 text (<= 4,096 bytes) to Strands Agent as a toolResult content block.`;
+  document.getElementById("tool-outcome").textContent = {
+    pass: "Allowed. Returns up to 4,096 bytes of UTF-8 text.",
+    fail: outcome.detail,
+    unknown: outcome.detail,
+  }[outcome.status];
 }
 
 /* ==================== LAB 4: HARDWARE PROFILES ==================== */

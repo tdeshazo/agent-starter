@@ -1,36 +1,31 @@
 """Run the line-oriented terminal interface for pipes and dumb terminals."""
-from pathlib import Path
 import shutil
 import time
 from collections.abc import Callable
 
-from ..settings import apply_agent_settings
+from ..conversation import Conversation, InvocationError
+from ..preferences import PET_NAMES, UserPreferences
 from .commands import command_output, parse_slash_command
-from .pets import PET_NAMES, load_pet, normalize_pet, save_pet
-from .session import conversation_turn, session_info
+from .session import session_info
 from .terminal import use_color, write_rows
 from .transcript import Transcript
 
 
 def run_plain(
-    agent_factory: Callable[[], object],
-    agent=None,
+    conversation: Conversation,
+    preferences: UserPreferences,
     read: Callable[[], str] = input,
-    *,
-    config_path: Path | None = None,
 ) -> None:
     """Line-oriented fallback for pipes and dumb terminals."""
     color = use_color()
-    pet = load_pet(config_path)
+    pet = preferences.pet()
     transcript = Transcript(
         write_rows,
         lambda: shutil.get_terminal_size().columns,
         color,
     )
-    agent = agent if agent is not None else agent_factory()
-    apply_agent_settings(agent, config_path)
-    agent.callback_handler = transcript
-    transcript.header(pet=pet, **session_info(agent))
+    conversation.observe(transcript)
+    transcript.header(pet=pet, **session_info(conversation.details()))
     while True:
         try:
             entered = read()
@@ -48,38 +43,35 @@ def run_plain(
             elif cmd.name == "/settings":
                 transcript.info("Open the full-screen interface to edit agent settings.")
             elif cmd.name == "/clear":
-                agent = agent_factory()
-                apply_agent_settings(agent, config_path)
-                agent.callback_handler = transcript
-                transcript.info("Started a new conversation.")
+                try:
+                    conversation.reset()
+                except InvocationError as error:
+                    transcript.error(str(error))
+                else:
+                    transcript.info("Started a new conversation.")
             elif cmd.name == "/pet":
                 if cmd.arg is None:
                     choices = ", ".join(PET_NAMES)
                     transcript.info(f"Current pet: {pet}. Choose from: {choices} (use /pet <name>).")
                 else:
-                    chosen = normalize_pet(cmd.arg)
-                    if chosen is None:
-                        choices = ", ".join(PET_NAMES)
-                        transcript.error(f"Unknown pet {cmd.arg!r}. Choose from: {choices}.")
+                    try:
+                        pet = preferences.select_pet(cmd.arg)
+                    except ValueError as error:
+                        transcript.error(str(error))
+                    except OSError as error:
+                        transcript.error(f"Could not save pet preference: {error}")
                     else:
-                        try:
-                            save_pet(chosen, config_path)
-                        except OSError as error:
-                            transcript.error(f"Could not save pet preference: {error}")
-                        else:
-                            pet = chosen
-                            transcript.info(f"Selected pet: {chosen}.")
-            elif result := command_output(cmd.name, agent):
+                        transcript.info(f"Selected pet: {pet}.")
+            elif result := command_output(cmd.name, conversation):
                 transcript.info(result)
             continue
         transcript.user(entered)
         started = time.monotonic()
         try:
-            with conversation_turn(agent.messages):
-                agent(prompt)
+            conversation.invoke(prompt)
         except KeyboardInterrupt:
             transcript.end_turn(time.monotonic() - started, stopped=True)
             break
-        except Exception as error:
-            transcript.invocation_failed(error)
+        except InvocationError as error:
+            transcript.error(str(error))
         transcript.end_turn(time.monotonic() - started)

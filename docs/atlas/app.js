@@ -64,7 +64,7 @@
     const footer = document.getElementById("footer-meta");
     const tests = META.verifiedTests || { passed: 0, failed: 0 };
     if (banner) {
-      banner.textContent = `commit ${META.short || "unknown"} (${META.branch || "main"}) · ${tests.passed}/${tests.passed + tests.failed} unit tests verified · generated ${META.generatedAt || ""}`;
+      banner.textContent = `Source snapshot ${META.short || "unknown"} (${META.branch || "main"}) · ${tests.passed}/${tests.passed + tests.failed} unit tests verified · generated ${META.generatedAt || ""}`;
     }
     if (footer) {
       footer.textContent = `Generated against Git commit ${META.commit || "unknown"} — "${META.subject || ""}"`;
@@ -833,87 +833,34 @@
   }
 
   // Lab 2: Tool Security & Budget Inspector
-  const ALLOWED_ENV = new Set([".env.example", ".env.sample", ".env.template"]);
   let lab2Path = "simple_agent/agent.py";
   let lab2Start = "22";
   let lab2End = "46";
   let lab2Kind = "regular"; // regular | symlink_outside | symlink_env | fifo | dir
   let lab2Size = 1800;
 
-  function evaluateReadFilePolicy(path, startStr, endStr, kind, sizeBytes) {
-    const steps = [];
-    const hasStart = startStr.trim() !== "";
-    const hasEnd = endStr.trim() !== "";
-    if (hasStart !== hasEnd) {
-      steps.push({ gate: "1. Line Range Pairing", ok: false, detail: "ValueError: Provide both start_line and end_line together." });
-      return steps;
-    }
-    let start = null, end = null;
-    if (hasStart) {
-      start = Number(startStr);
-      end = Number(endStr);
-      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || start > end) {
-        steps.push({ gate: "1. Line Range Validation", ok: false, detail: "ValueError: Line numbers must be positive integers with start_line at most end_line." });
-        return steps;
-      }
-      steps.push({ gate: "1. Line Range Validation", ok: true, detail: `Valid inclusive range [${start}..${end}] (exact int check rejects bool).` });
-    } else {
-      steps.push({ gate: "1. Line Range Validation", ok: true, detail: "Whole-file mode (4,096-byte input limit)." });
-    }
-
-    const normalized = path.replace(/\\/g, "/");
-    const outside = normalized.startsWith("..") || normalized.startsWith("/") || normalized.includes("/../") || kind === "symlink_outside";
-    if (outside) {
-      steps.push({ gate: "2. Workspace Confinement (resolved.is_relative_to(root))", ok: false, detail: `ValueError: Path '${path}' is outside the working directory.` });
-      return steps;
-    }
-    steps.push({ gate: "2. Workspace Confinement", ok: true, detail: "Resolved path stays inside workspace root." });
-
-    const effectivePath = kind === "symlink_env" ? ".env" : normalized;
-    const parts = effectivePath.split("/").filter((p) => p && p !== ".");
-    if (!parts.length) {
-      steps.push({ gate: "3. Non-Empty Relative Path", ok: false, detail: `ValueError: Expected a regular file at '${path}'.` });
-      return steps;
-    }
-    const base = parts[parts.length - 1];
-    const sensitive = parts.includes(".git") || base === ".env" || (base.startsWith(".env.") && !ALLOWED_ENV.has(base));
-    if (sensitive) {
-      steps.push({ gate: "3. _is_sensitive_path()", ok: false, detail: `ValueError: Reading sensitive file '${path}' is not allowed.` });
-      return steps;
-    }
-    steps.push({ gate: "3. _is_sensitive_path()", ok: true, detail: `Allowed ('${base}' is not .git or blocked .env.*).` });
-
-    if (kind === "fifo" || kind === "dir") {
-      steps.push({ gate: "4. dir_fd O_NOFOLLOW + lstat/fstat S_ISREG", ok: false, detail: `ValueError: Expected a regular file at '${path}' (blocked ${kind} before blocking open).` });
-      return steps;
-    }
-    steps.push({ gate: "4. dir_fd O_NOFOLLOW + O_NONBLOCK + fstat S_ISREG", ok: true, detail: "Passed component-by-component dir_fd traversal (O_PATH on ancestors)." });
-
-    const limit = hasStart ? 1048576 : 4096;
-    if (sizeBytes > limit) {
-      steps.push({ gate: "5. Byte Budget Check", ok: false, detail: `ValueError: File (${sizeBytes} B) exceeds the ${limit}-byte read limit.` });
-      return steps;
-    }
-    steps.push({ gate: "5. Byte Budget Check", ok: true, detail: `Within ${limit.toLocaleString()}-byte limit (${sizeBytes.toLocaleString()} B) -> UTF-8 decode & return.` });
-    return steps;
-  }
+  let lab2SelectedBytes = null;
 
   function renderLabSecurity(host) {
-    const trace = evaluateReadFilePolicy(lab2Path, lab2Start, lab2End, lab2Kind, lab2Size);
+    const trace = evaluateAtlasReadFile({
+      path: lab2Path, start: lab2Start, end: lab2End, kind: lab2Kind,
+      size: lab2Size, selectedBytes: lab2SelectedBytes,
+    });
     const presets = [
-      { label: "Valid ranged read", path: "simple_agent/agent.py", s: "22", e: "46", k: "regular", sz: 1800 },
+      { label: "Absolute path inside workspace", path: "/workspace/simple_agent/agent.py", s: "22", e: "46", k: "regular", sz: 1800 },
       { label: "../secret.txt", path: "../secret.txt", s: "", e: "", k: "regular", sz: 120 },
       { label: ".env (blocked)", path: ".env", s: "", e: "", k: "regular", sz: 170 },
       { label: ".env.example (allowed)", path: ".env.example", s: "", e: "", k: "regular", sz: 170 },
       { label: "symlink -> .env", path: "env_link.txt", s: "", e: "", k: "symlink_env", sz: 170 },
       { label: "pipe.fifo (DoS)", path: "pipe.fifo", s: "", e: "", k: "fifo", sz: 0 },
       { label: "64 KiB whole-file (over 4 KiB)", path: "docs/large.txt", s: "", e: "", k: "regular", sz: 65536 },
-      { label: "64 KiB ranged (<= 1 MiB)", path: "docs/large.txt", s: "1", e: "10", k: "regular", sz: 65536 },
+      { label: "64 KiB ranged (<= 1 MiB)", path: "docs/large.txt", s: "1", e: "10", k: "regular", sz: 65536, selected: 2048 },
+      { label: "Range over 4 KiB", path: "docs/large.txt", s: "1", e: "10", k: "regular", sz: 65536, selected: 4097 },
     ];
 
     host.innerHTML = `
       <h3>Lab 2 — <code>read_file</code> Security Gate &amp; <code>search_text</code> Budget Inspector</h3>
-      <p class="muted">Test any path, file type, size, and line range against the exact validation sequence in <code>simple_agent/tools.py:84-127</code>.</p>
+      <p class="muted">Simulate a read from <code>/workspace</code>. The selected byte count models the output from the requested line range.</p>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
         ${presets.map((p, i) => `<button class="btn btn-sm" data-l2p="${i}">${esc(p.label)}</button>`).join("")}
       </div>
@@ -928,23 +875,25 @@
           <option value="fifo" ${lab2Kind === "fifo" ? "selected" : ""}>Named pipe (FIFO)</option>
           <option value="dir" ${lab2Kind === "dir" ? "selected" : ""}>Directory</option>
         </select>
-        <input id="l2-size" type="number" class="search-input" style="flex:0 1 115px;" value="${lab2Size}" min="0" step="512">
+        <input id="l2-size" type="number" class="search-input" style="flex:0 1 115px;" value="${lab2Size}" min="0" step="1" aria-label="File size in bytes">
+        <input id="l2-selected" type="number" class="search-input" style="flex:0 1 150px;" min="0" step="1"
+          value="${lab2SelectedBytes ?? ""}" placeholder="Range bytes" aria-label="Selected range size in bytes">
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
         ${trace
           .map(
             (t) => `
-          <div class="bp-item" style="border-left-color:${t.ok ? "var(--ok)" : "var(--err)"};">
+          <div class="bp-item" style="border-left-color:${t.status === "pass" ? "var(--ok)" : t.status === "unknown" ? "var(--accent)" : "var(--err)"};">
             <div style="display:flex;justify-content:space-between;">
               <strong>${esc(t.gate)}</strong>
-              <span class="badge ${t.ok ? "badge-verified" : "badge-assumption"}" style="${t.ok ? "" : "background:var(--err-bg);color:var(--err);border-color:rgba(239,68,68,.35);"}">${t.ok ? "PASS" : "BLOCKED"}</span>
+              <span class="badge ${t.status === "pass" ? "badge-verified" : "badge-assumption"}" style="${t.status === "fail" ? "background:var(--err-bg);color:var(--err);" : ""}">${t.status === "pass" ? "PASS" : t.status === "fail" ? "BLOCKED" : "NEEDS INPUT"}</span>
             </div>
             <div class="muted" style="margin-top:3px;">${esc(t.detail)}</div>
           </div>`
           )
           .join("")}
       </div>
-      <h4><code>search_text</code> Hard Resource Budgets (<code>simple_agent/tools.py:14-23</code>)</h4>
+      <h4><code>search_text</code> Resource Budgets (<code>workspace_files.py</code> and <code>workspace_text.py</code>)</h4>
       <div class="kv-grid">
         <div class="kv-box"><div class="kv-label">Max Matches</div><div class="kv-val">20 rows</div></div>
         <div class="kv-box"><div class="kv-label">Max Output</div><div class="kv-val">4,096 B (reserves notice)</div></div>
@@ -958,7 +907,7 @@
     host.querySelectorAll("[data-l2p]").forEach((btn) => {
       btn.onclick = () => {
         const p = presets[Number(btn.dataset.l2p)];
-        lab2Path = p.path; lab2Start = p.s; lab2End = p.e; lab2Kind = p.k; lab2Size = p.sz;
+        lab2Path = p.path; lab2Start = p.s; lab2End = p.e; lab2Kind = p.k; lab2Size = p.sz; lab2SelectedBytes = p.selected ?? null;
         renderLabSecurity(host);
       };
     });
@@ -968,9 +917,11 @@
       lab2End = document.getElementById("l2-end").value;
       lab2Kind = document.getElementById("l2-kind").value;
       lab2Size = Number(document.getElementById("l2-size").value) || 0;
+      const selected = document.getElementById("l2-selected").value;
+      lab2SelectedBytes = selected === "" ? null : Number(selected);
       renderLabSecurity(host);
     };
-    ["l2-path", "l2-start", "l2-end", "l2-kind", "l2-size"].forEach((id) => {
+    ["l2-path", "l2-start", "l2-end", "l2-kind", "l2-size", "l2-selected"].forEach((id) => {
       document.getElementById(id).onchange = sync;
     });
   }
