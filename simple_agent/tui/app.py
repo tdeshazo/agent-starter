@@ -1,9 +1,10 @@
 """Run the full-screen transcript, composer, and interactive turn lifecycle."""
 import asyncio
-from pathlib import Path
+import math
 import time
 from collections.abc import Callable
 from functools import cache
+from pathlib import Path
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
@@ -15,6 +16,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.key_binding.defaults import load_key_bindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
     FormattedTextControl,
@@ -27,11 +29,18 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.layout.controls import BufferControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 from prompt_toolkit.styles import Style
 
 from ..prompts import SYSTEM_PROMPT
-from ..settings import DEFAULT_AGENT_NAME, apply_agent_settings, normalize_agent_name, save_settings
+from ..settings import (
+    DEFAULT_AGENT_NAME,
+    apply_agent_settings,
+    load_settings,
+    normalize_agent_name,
+    save_settings,
+)
 from .commands import COMMANDS, command_output, matching_commands, parse_slash_command
 from .pets import PET_NAMES, PETS, load_pet, normalize_pet, pet_rows, pet_width, save_pet
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, header_cell, sgr, shimmer
@@ -43,6 +52,47 @@ from .transcript import Transcript
 PLACEHOLDER = "Ask the agent anything"
 ESCAPE_TIMEOUT = 0.1
 FRAME_INTERVAL = 0.08
+MOUSE_SCROLL_LINES = 3
+
+
+def _normalize_scroll_speed(value: object) -> float:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    ):
+        return min(float(value), 20.0)
+    return 1.0
+
+
+class _WheelFallbackWindow(Window):
+    """Delegate mouse-wheel events unless this window can scroll its own content."""
+
+    def __init__(self, *args, on_wheel: Callable[[int], None], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_wheel = on_wheel
+
+    def _can_scroll_self(self, direction: int) -> bool:
+        info = self.render_info
+        if info is None or info.content_height <= info.window_height:
+            return False
+        if direction < 0:
+            return self.vertical_scroll > 0
+        return info.last_visible_line() < info.content_height - 1
+
+    def _mouse_handler(self, mouse_event: MouseEvent):
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            if self._can_scroll_self(-1):
+                return super()._mouse_handler(mouse_event)
+            self._on_wheel(-1)
+            return None
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            if self._can_scroll_self(1):
+                return super()._mouse_handler(mouse_event)
+            self._on_wheel(1)
+            return None
+        return super()._mouse_handler(mouse_event)
 
 
 class TranscriptControl(UIControl):
@@ -52,11 +102,28 @@ class TranscriptControl(UIControl):
         self,
         tail: Callable[[], list[str]],
         on_width_change: Callable[[int], None] | None = None,
+        on_wheel: Callable[[int], None] | None = None,
+        focusable: Callable[[], bool] | None = None,
     ):
         self.rows: list[str] = []
         self.tail = tail
         self.on_width_change = on_width_change
+        self.on_wheel = on_wheel
+        self._focusable = focusable
         self.first_line: int | None = None
+
+    def is_focusable(self) -> bool:
+        return self._focusable() if self._focusable is not None else False
+
+    def mouse_handler(self, mouse_event: MouseEvent):
+        if self.on_wheel is not None:
+            if mouse_event.event_type == MouseEventType.SCROLL_UP:
+                self.on_wheel(-1)
+                return None
+            if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+                self.on_wheel(1)
+                return None
+        return NotImplemented
 
     def create_content(self, width: int, height: int | None) -> UIContent:
         if self.on_width_change is not None:
@@ -98,15 +165,25 @@ class AgentTui:
         self.color = use_color() if color is None else color
         self.config_path = config_path
         self.pet = load_pet(self.config_path)
+        self.mouse_scroll_speed = _normalize_scroll_speed(
+            load_settings(self.config_path).get("mouse_scroll_speed")
+        )
+        self._scroll_remainder = 0.0
         self._header_len = 0
         self._header_width = 0
+        self._in_pager = False
         self._pet_picker_index: int | None = None
         self._editing_settings = False
         self._settings_error = ""
         self._name_buffer = Buffer(multiline=False)
         self._system_prompt_buffer = Buffer(multiline=True)
         self.transcript = Transcript(self._emit, self._width, self.color)
-        self._history = TranscriptControl(self.transcript.tail, on_width_change=self._sync_width)
+        self._history = TranscriptControl(
+            self._tail_rows,
+            on_width_change=self._sync_width,
+            on_wheel=self._scroll_wheel,
+            focusable=lambda: self._in_pager,
+        )
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
         self.agent = None
         self._set_agent(agent if agent is not None else agent_factory())
@@ -127,6 +204,7 @@ class AgentTui:
                 else {}
             ),
             full_screen=True,
+            mouse_support=Condition(lambda: not self._editing_settings),
             erase_when_done=True,
             input=input,
             output=output,
@@ -150,6 +228,39 @@ class AgentTui:
     def _emit(self, lines: list[str]) -> None:
         self._history.rows.extend(lines)
         self.app.invalidate()
+
+    def _tail_rows(self) -> list[str]:
+        tail = self.transcript.tail()
+        if (
+            tail
+            and self.transcript.stream is not None
+            and not self.transcript._stream_opened
+            and self.transcript.stream.tail()
+        ):
+            return [""] + tail
+        return tail
+
+    # Transcript overlay (Ctrl+T)
+
+    def _open_pager(self) -> None:
+        if self._in_pager:
+            return
+        self._in_pager = True
+        self.app.layout.focus(self._history_window)
+        self.app.invalidate()
+
+    def _close_pager(self) -> None:
+        if not self._in_pager:
+            return
+        self._in_pager = False
+        self.app.layout.focus(self._composer)
+        self.app.invalidate()
+
+    def _toggle_pager(self) -> None:
+        if self._in_pager:
+            self._close_pager()
+        else:
+            self._open_pager()
 
     # Pet selection
 
@@ -249,13 +360,18 @@ class AgentTui:
                 return [("class:prompt", "› ")]
             return [("", "  ")]
 
-        in_picker = Condition(lambda: self._pet_picker_index is not None)
-        in_settings = Condition(lambda: self._editing_settings)
-        in_composer = ~in_picker & ~in_settings
+        def wheel_window(*args, **kwargs) -> Window:
+            return _WheelFallbackWindow(*args, on_wheel=self._handle_surface_wheel, **kwargs)
+
+        in_pager = Condition(lambda: self._in_pager)
+        in_picker = ~in_pager & Condition(lambda: self._pet_picker_index is not None)
+        in_settings = ~in_pager & Condition(lambda: self._editing_settings)
+        in_composer = ~in_pager & ~in_picker & ~in_settings
         has_commands = in_composer & Condition(lambda: bool(matching_commands(self.buffer.text)))
+        is_running = Condition(lambda: self.running)
         is_empty = Condition(lambda: not self.buffer.text)
 
-        self._composer = Window(
+        self._composer = wheel_window(
             BufferControl(
                 self.buffer,
                 input_processors=[
@@ -268,7 +384,7 @@ class AgentTui:
             dont_extend_height=True,
             height=Dimension(min=1, max=12),
         )
-        self._picker_window = Window(
+        self._picker_window = wheel_window(
             FormattedTextControl(lambda: ansi(self._pet_picker_rows()), focusable=True),
             dont_extend_height=True,
         )
@@ -289,9 +405,20 @@ class AgentTui:
                 Condition(lambda: bool(self._settings_error)),
             ),
         ])
+        pager_header = VSplit([
+            wheel_window(
+                FormattedTextControl(lambda: ansi(["  " + sgr("T R A N S C R I P T", BOLD, self.color)])),
+                height=1,
+            ),
+            wheel_window(
+                FormattedTextControl(lambda: ansi([self._pager_status()])),
+                height=1,
+                align=WindowAlign.RIGHT,
+            ),
+        ])
         footer = VSplit([
-            Window(FormattedTextControl(lambda: ansi([self._footer_hints()])), height=1),
-            Window(
+            wheel_window(FormattedTextControl(lambda: ansi([self._footer_hints()])), height=1),
+            wheel_window(
                 FormattedTextControl(lambda: ansi([self._footer_status()])),
                 height=1,
                 align=WindowAlign.RIGHT,
@@ -299,20 +426,31 @@ class AgentTui:
         ])
         return Layout(
             HSplit([
+                ConditionalContainer(pager_header, in_pager),
+                ConditionalContainer(
+                    wheel_window(
+                        FormattedTextControl(lambda: ansi([sgr("─" * self._width(), DIM, self.color)])),
+                        height=1,
+                    ),
+                    in_pager,
+                ),
                 self._history_window,
                 ConditionalContainer(
-                    Window(FormattedTextControl(lambda: ansi([self._status_line()])), height=1),
-                    Condition(lambda: self.running),
+                    wheel_window(FormattedTextControl(lambda: ansi([self._status_line()])), height=1),
+                    is_running,
                 ),
-                Window(height=Dimension(preferred=1, max=1)),
+                ConditionalContainer(wheel_window(height=Dimension(preferred=1, max=1)), ~in_pager),
                 ConditionalContainer(self._composer, in_composer),
                 ConditionalContainer(
-                    Window(FormattedTextControl(lambda: ansi(self._command_rows())), dont_extend_height=True),
+                    wheel_window(
+                        FormattedTextControl(lambda: ansi(self._command_rows())),
+                        dont_extend_height=True,
+                    ),
                     has_commands,
                 ),
                 ConditionalContainer(self._picker_window, in_picker),
                 ConditionalContainer(settings, in_settings),
-                Window(height=Dimension(preferred=1, max=1)),
+                wheel_window(height=Dimension(preferred=1, max=1)),
                 footer,
             ]),
             focused_element=self._composer,
@@ -320,11 +458,25 @@ class AgentTui:
 
     def _status_line(self) -> str:
         elapsed = format_elapsed(time.monotonic() - self.turn_started)
+        action = "esc to close" if self._in_pager else "esc to interrupt"
         return (
             "• "
             + shimmer("Working", time.monotonic(), self.color)
-            + sgr(f" ({elapsed} • esc to interrupt)", DIM, self.color)
+            + sgr(f" ({elapsed} • {action})", DIM, self.color)
         )
+
+    def _pager_status(self) -> str:
+        total = len(self._history.rows) + len(self._tail_rows())
+        if not total:
+            label = "Empty"
+        elif self._history.first_line is None:
+            label = "Live" if self.running else "Bottom"
+        elif self._history.first_line == 0:
+            label = f"Top · 1/{total}"
+        else:
+            row = min(self._history.first_line + 1, total)
+            label = f"Row {row}/{total}"
+        return sgr(f"{label}  ", DIM, self.color)
 
     def _command_description(self, command: str) -> str:
         if command in COMMANDS:
@@ -389,47 +541,180 @@ class AgentTui:
         return rows
 
     def _footer_hints(self) -> str:
-        if self._editing_settings:
+        if self._in_pager:
+            hints = ["↑/↓ scroll", "PgUp/PgDn page", "Home/End jump", "q/esc back"]
+        elif self._editing_settings:
             hints = ["tab switch field", "⌃S save", "esc cancel"]
         elif self._pet_picker_index is not None:
             hints = ["↑/↓ choose", "⏎ select", "esc cancel"]
         elif self.running:
-            hints = ["esc interrupt", "⌃C interrupt"]
+            hints = ["esc interrupt", "⌃T transcript", "⌃C interrupt"]
         elif matching_commands(self.buffer.text):
             hints = ["tab complete", "⏎ run"]
         elif self.buffer.text:
             hints = ["⏎ send", "⌥⏎ newline", "⌃C clear"]
         else:
-            hints = ["⏎ send", "⌥⏎ newline", "/ commands", "PgUp/PgDn scroll", "⌃C quit"]
+            hints = ["⏎ send", "⌥⏎ newline", "/ commands", "PgUp/PgDn scroll", "⌃T transcript", "⌃C quit"]
         return "  " + sgr("   ".join(hints), DIM, self.color)
 
     def _footer_status(self) -> str:
+        parts = []
+        if not self._in_pager and self._history.first_line is not None:
+            parts.append("↑ scrolled")
         tokens = total_tokens(self.agent)
-        return sgr(f"{format_tokens(tokens)} tokens used  ", DIM, self.color) if tokens else ""
+        if tokens:
+            parts.append(f"{format_tokens(tokens)} tokens used")
+        return sgr(" · ".join(parts) + "  ", DIM, self.color) if parts else ""
 
     # Input handling
+
+    def _handle_surface_wheel(self, direction: int) -> None:
+        if self._pet_picker_index is not None and not self._in_pager:
+            self._move_pet_picker(direction)
+        else:
+            self._scroll_wheel(direction)
+
+    def _scroll_wheel(self, direction: int) -> None:
+        if (direction < 0 < self._scroll_remainder) or (direction > 0 > self._scroll_remainder):
+            self._scroll_remainder = 0.0
+        total = self._scroll_remainder + direction * MOUSE_SCROLL_LINES * self.mouse_scroll_speed
+        lines = int(total)
+        self._scroll_remainder = total - lines
+        if lines:
+            self._scroll_lines(lines)
+
+    def _scroll_lines(self, delta: int) -> None:
+        info = self._history_window.render_info
+        if info is None or not info.displayed_lines or delta == 0:
+            return
+        first = info.first_visible_line()
+        last = info.last_visible_line()
+        if delta < 0:
+            if first == 0:
+                return
+            target = max(0, first + delta)
+            self._history.first_line = target
+            self._history_window.vertical_scroll = target
+        elif last + delta >= info.content_height - 1:
+            self._history.first_line = None
+            self._scroll_remainder = 0.0
+        else:
+            target = first + delta
+            self._history.first_line = target
+            self._history_window.vertical_scroll = target
+        self.app.invalidate()
 
     def _scroll_history(self, direction: int) -> None:
         info = self._history_window.render_info
         if info is None or not info.displayed_lines:
             return
-        first = info.first_visible_line()
-        last = info.last_visible_line()
-        if direction < 0 and first == 0:
+        page = max(1, info.last_visible_line() - info.first_visible_line())
+        self._scroll_lines(direction * page)
+
+    def _scroll_half_page(self, direction: int) -> None:
+        info = self._history_window.render_info
+        if info is None or not info.displayed_lines:
             return
-        page = max(1, last - first)
-        if direction > 0 and last + page >= info.content_height - 1:
-            self._history.first_line = None
-        else:
-            self._history.first_line = max(0, first + direction * page)
-            self._history_window.vertical_scroll = self._history.first_line
+        half_page = max(1, (info.last_visible_line() - info.first_visible_line()) // 2)
+        self._scroll_lines(direction * half_page)
+
+    def _scroll_to_top(self) -> None:
+        info = self._history_window.render_info
+        if info is not None and info.content_height <= info.window_height:
+            return
+        self._history.first_line = 0
+        self._history_window.vertical_scroll = 0
+        self._scroll_remainder = 0.0
+        self.app.invalidate()
+
+    def _scroll_to_bottom(self) -> None:
+        self._history.first_line = None
+        self._scroll_remainder = 0.0
+        self.app.invalidate()
 
     def _bindings(self) -> KeyBindings:
         bindings = KeyBindings()
-        in_picker = Condition(lambda: self._pet_picker_index is not None)
-        in_settings = Condition(lambda: self._editing_settings)
+        in_pager = Condition(lambda: self._in_pager)
+        in_picker = ~in_pager & Condition(lambda: self._pet_picker_index is not None)
+        in_settings = ~in_pager & Condition(lambda: self._editing_settings)
         in_name = in_settings & Condition(lambda: self.app.layout.has_focus(self._name_field))
-        in_composer = ~in_picker & ~in_settings
+        in_composer = ~in_pager & ~in_picker & ~in_settings
+
+        @bindings.add("c-t", filter=~in_settings & ~in_picker)
+        def toggle_pager(event):
+            self._toggle_pager()
+
+        @bindings.add(Keys.ScrollUp, filter=~in_settings)
+        def wheel_up(event):
+            self._handle_surface_wheel(-1)
+
+        @bindings.add(Keys.ScrollDown, filter=~in_settings)
+        def wheel_down(event):
+            self._handle_surface_wheel(1)
+
+        @bindings.add("pageup", filter=~in_settings)
+        def page_up(event):
+            self._scroll_history(-1)
+
+        @bindings.add("pagedown", filter=~in_settings)
+        def page_down(event):
+            self._scroll_history(1)
+
+        @bindings.add("c-home", filter=~in_settings)
+        def transcript_top(event):
+            self._scroll_to_top()
+
+        @bindings.add("c-end", filter=~in_settings)
+        def transcript_bottom(event):
+            self._scroll_to_bottom()
+
+        @bindings.add("up", filter=in_pager)
+        @bindings.add("k", filter=in_pager)
+        @bindings.add("c-p", filter=in_pager)
+        @bindings.add("c-y", filter=in_pager)
+        def pager_up(event):
+            self._scroll_lines(-1)
+
+        @bindings.add("down", filter=in_pager)
+        @bindings.add("j", filter=in_pager)
+        @bindings.add("c-n", filter=in_pager)
+        @bindings.add("c-e", filter=in_pager)
+        @bindings.add("enter", filter=in_pager)
+        def pager_down(event):
+            self._scroll_lines(1)
+
+        @bindings.add("b", filter=in_pager)
+        def pager_page_up(event):
+            self._scroll_history(-1)
+
+        @bindings.add(" ", filter=in_pager)
+        def pager_page_down(event):
+            self._scroll_history(1)
+
+        @bindings.add("c-u", filter=in_pager)
+        def pager_half_up(event):
+            self._scroll_half_page(-1)
+
+        @bindings.add("c-d", filter=in_pager)
+        def pager_half_down(event):
+            self._scroll_half_page(1)
+
+        @bindings.add("home", filter=in_pager)
+        @bindings.add("g", filter=in_pager)
+        @bindings.add("<", filter=in_pager)
+        def pager_top(event):
+            self._scroll_to_top()
+
+        @bindings.add("end", filter=in_pager)
+        @bindings.add("G", filter=in_pager)
+        @bindings.add(">", filter=in_pager)
+        def pager_bottom(event):
+            self._scroll_to_bottom()
+
+        @bindings.add("q", filter=in_pager)
+        @bindings.add("escape", eager=True, filter=in_pager)
+        def pager_close(event):
+            self._close_pager()
 
         @bindings.add("tab", filter=in_settings)
         @bindings.add("s-tab", filter=in_settings)
@@ -448,14 +733,6 @@ class AgentTui:
         @bindings.add("escape", eager=True, filter=in_settings)
         def cancel_settings_editor(event):
             self._close_settings()
-
-        @bindings.add("pageup", filter=~in_settings)
-        def page_up(event):
-            self._scroll_history(-1)
-
-        @bindings.add("pagedown", filter=~in_settings)
-        def page_down(event):
-            self._scroll_history(1)
 
         @bindings.add("up", filter=in_picker)
         @bindings.add("left", filter=in_picker)
@@ -498,14 +775,16 @@ class AgentTui:
                 self.buffer.cursor_position = len(self.buffer.text)
 
         # Eager so Esc interrupts at once instead of waiting to see whether it
-        # starts a key sequence; only while running, so Alt+Enter works when idle.
-        @bindings.add("escape", eager=True, filter=Condition(lambda: self.running))
+        # starts a key sequence; only while running outside overlays, so Alt+Enter works when idle.
+        @bindings.add("escape", eager=True, filter=in_composer & Condition(lambda: self.running))
         def escape(event):
             self.interrupt()
 
         @bindings.add("c-c")
         def control_c(event):
-            if self._editing_settings:
+            if self._in_pager:
+                self._close_pager()
+            elif self._editing_settings:
                 self._close_settings()
             elif self._pet_picker_index is not None:
                 self._close_pet_picker()
@@ -534,7 +813,7 @@ class AgentTui:
             return
         self.buffer.append_to_history()
         self.buffer.reset()
-        self._history.first_line = None
+        self._scroll_to_bottom()
         cmd = parse_slash_command(prompt, interactive=True)
         if cmd is not None:
             if cmd.error:
@@ -543,7 +822,7 @@ class AgentTui:
                 self.app.exit()
             elif cmd.name == "/clear":
                 self._set_agent(self.agent_factory())
-                del self._history.rows[self._header_len:]
+                del self._history.rows[self._header_len :]
                 self._refresh_header()
                 self.transcript.info("Started a new conversation.")
             elif cmd.name == "/settings":

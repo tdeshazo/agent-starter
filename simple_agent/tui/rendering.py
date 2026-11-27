@@ -6,6 +6,26 @@ import unicodedata
 from prompt_toolkit.utils import get_cwidth
 
 from ..settings import DEFAULT_AGENT_NAME
+from .markdown import (
+    BOLD,
+    CYAN,
+    DIM,
+    ITALIC,
+    STRIKE,
+    UNDERLINE,
+    WORD,
+    can_be_table_delimiter_prefix,
+    fence_transition,
+    is_table_body_row,
+    is_table_header_candidate,
+    parse_table_alignments,
+    render_markdown_line,
+    render_table,
+    sgr,
+    split_table_cells,
+    split_width,
+    wrap_ranges,
+)
 from .pets import DEFAULT_PET, PET_GAP, pet_rows, pet_width
 from .terminal import light_background
 
@@ -13,16 +33,45 @@ from .terminal import light_background
 TOOL_RESULT_LINES = 3
 MAX_ESCAPE_BUFFER = 256
 
-BOLD = "1"
-DIM = "2"
 ITALIC_DIM = "2;3"
-CYAN = "36"
 BOLD_CYAN = "1;36"
 USER_TEXT = "38;5;152"
 USER_TEXT_LIGHT = "38;5;23"
 RED = "31"
 
-WORD = re.compile(r"([^\S\n]*)(\S+)")
+__all__ = [
+    "BOLD",
+    "BOLD_CYAN",
+    "CYAN",
+    "DIM",
+    "ITALIC",
+    "ITALIC_DIM",
+    "RED",
+    "STRIKE",
+    "StreamCell",
+    "TOKEN_USAGE_FIELDS",
+    "UNDERLINE",
+    "USER_TEXT",
+    "USER_TEXT_LIGHT",
+    "error_cell",
+    "format_elapsed",
+    "format_tokens",
+    "header_cell",
+    "info_cell",
+    "sanitize_text",
+    "separator_cell",
+    "session_box",
+    "sgr",
+    "shimmer",
+    "tool_call_rows",
+    "tool_result_rows",
+    "truncate",
+    "usage_cell",
+    "user_cell",
+    "user_text_style",
+    "wrap",
+]
+
 ANSI_ESCAPE = re.compile(
     r"\x1b(?:"
     r"\[[0-?]*[ -/]*[@-~]"
@@ -64,21 +113,7 @@ def sanitize_text(text: str, *, multiline: bool = True) -> str:
     return "".join(out)
 
 
-def sgr(text: str, codes: str, color: bool = True) -> str:
-    """Wrap text in an ANSI style when color is enabled."""
-    if color and codes and text:
-        return f"\x1b[{codes}m{text}\x1b[0m"
-    return text
-
-
-def _split_width(text: str, width: int) -> tuple[str, str]:
-    """Split text after the longest prefix that fits in width columns."""
-    used = 0
-    for index, char in enumerate(text):
-        used += get_cwidth(char)
-        if used > width:
-            return text[: max(index, 1)], text[max(index, 1) :]
-    return text, ""
+_split_width = split_width
 
 
 def wrap(text: str, width: int) -> list[str]:
@@ -88,29 +123,8 @@ def wrap(text: str, width: int) -> list[str]:
     broken there. Rows other than the last never change when text is appended,
     which lets streamed rows be committed to the transcript as soon as they fill.
     """
-    width = max(width, 1)
-    rows: list[str] = []
-    row = ""
-    for match in WORD.finditer(text.expandtabs(4)):
-        space, word = match.groups()
-        if row:
-            candidate = row + space + word
-        elif rows:
-            candidate = word
-        else:
-            candidate = space + word
-        if get_cwidth(candidate) <= width:
-            row = candidate
-            continue
-        if row:
-            rows.append(row)
-        while get_cwidth(word) > width:
-            head, word = _split_width(word, width)
-            rows.append(head)
-        row = word
-    if row or not rows:
-        rows.append(row)
-    return rows
+    expanded = text.expandtabs(4)
+    return [expanded[start:end] for start, end in wrap_ranges(expanded, width)]
 
 
 def truncate(text: str, width: int) -> str:
@@ -290,50 +304,17 @@ def separator_cell(elapsed: float, width: int, color: bool = True) -> list[str]:
     return [sgr(label + "─" * max(width - get_cwidth(label), 0), DIM, color)]
 
 
-INLINE = re.compile(r"(\*\*|`)")
-HEADING = re.compile(r"^(\s*)#{1,6} ")
-
-
-def render_inline(row: str, state: tuple[bool, bool], color: bool = True) -> tuple[str, tuple[bool, bool]]:
-    """Style **bold** and `code` spans, carrying open spans across rows."""
-    bold, code = state
-    out = []
-    for part in INLINE.split(row):
-        if part == "`":
-            code = not code
-        elif part == "**" and not code:
-            bold = not bold
-        else:
-            out.append(sgr(part, CYAN if code else (BOLD if bold else ""), color))
-    return "".join(out), (bold, code)
-
-
-def _fence_transition(
-    line: str, active: tuple[str, int] | None
-) -> tuple[bool, tuple[str, int] | None]:
-    """Check whether ``line`` opens or closes a CommonMark code fence."""
-    stripped = line.lstrip()
-    if active is None:
-        if stripped.startswith("```"):
-            count = len(stripped) - len(stripped.lstrip("`"))
-            if "`" not in stripped[count:]:
-                return True, ("`", count)
-        elif stripped.startswith("~~~"):
-            count = len(stripped) - len(stripped.lstrip("~"))
-            return True, ("~", count)
-        return False, None
-    char, min_len = active
-    if stripped.startswith(char * min_len):
-        count = len(stripped) - len(stripped.lstrip(char))
-        if not stripped[count:].strip():
-            return True, None
-    return False, active
-
-
 class StreamCell:
     """Wrap streamed text, committing rows once later text cannot change them."""
 
-    def __init__(self, width: int, bullet: str, style: str = "", color: bool = True, markdown: bool = False):
+    def __init__(
+        self,
+        width: int,
+        bullet: str,
+        style: str = "",
+        color: bool = True,
+        markdown: bool = False,
+    ):
         self.width = max(width - 2, 1)
         self.bullet = bullet
         self.style = style
@@ -344,34 +325,22 @@ class StreamCell:
         self.started = False
         self.blank_rows = 0
         self.fence: tuple[str, int] | None = None
-        self.inline = (False, False)
+        self._list_indents: list[tuple[int, int]] = []
+        self._quote_list_indents: list[tuple[int, int]] = []
+        self._table_lines: list[str] = []
         self._pending_escape = ""
 
     @property
     def in_fence(self) -> bool:
         return self.fence is not None
 
-    def _style(self, line: str, row: str, commit: bool) -> str:
-        if not self.markdown:
-            return sgr(row, self.style, self.color)
-        is_fence, _ = _fence_transition(line, self.fence)
-        if is_fence:
-            return sgr(row, DIM, self.color)
-        if self.fence is not None:
-            return row
-        stripped = line.lstrip()
-        if HEADING.match(stripped):
-            return sgr(INLINE.sub("", HEADING.sub(r"\1", row)), BOLD, self.color)
-        text, state = render_inline(row, self.inline, self.color)
-        if commit:
-            self.inline = state
-        return text
+    def _prefix(self, *, suppress_bullet: bool = False) -> str:
+        if self.started or (self.markdown and suppress_bullet):
+            return "  "
+        return self.bullet + " "
 
-    def _prefix(self) -> str:
-        return "  " if self.started else self.bullet + " "
-
-    def _rows(self, line: str, rows: list[str]) -> list[str]:
-        out = []
+    def _rows_plain(self, rows: list[str]) -> list[str]:
+        out: list[str] = []
         for row in rows:
             if not row.strip():
                 if self.started:
@@ -379,14 +348,77 @@ class StreamCell:
                 continue
             out.extend([""] * self.blank_rows)
             self.blank_rows = 0
-            out.append(self._prefix() + self._style(line, row, commit=True))
+            out.append(self._prefix() + sgr(row, self.style, self.color))
             self.started = True
         return out
 
-    def _end_line(self, line: str) -> None:
-        if self.markdown:
-            _, self.fence = _fence_transition(line, self.fence)
-        self.inline = (False, False)
+    def _emit_rendered(self, rendered_rows: list[str], *, suppress_bullet: bool = False) -> list[str]:
+        out: list[str] = []
+        for row in rendered_rows:
+            if not row.strip():
+                if self.started:
+                    self.blank_rows += 1
+                continue
+            out.extend([""] * self.blank_rows)
+            self.blank_rows = 0
+            out.append(self._prefix(suppress_bullet=suppress_bullet) + row)
+            self.started = True
+        return out
+
+    def _flush_table(self) -> list[str]:
+        if not self._table_lines:
+            return []
+        lines = self._table_lines
+        self._table_lines = []
+        if len(lines) == 1:
+            return self._commit_non_table_line(lines[0])
+        self._list_indents.clear()
+        self._quote_list_indents.clear()
+        return self._emit_rendered(
+            render_table(lines, self.width, self.color),
+            suppress_bullet=True,
+        )
+
+    def _commit_non_table_line(self, line: str) -> list[str]:
+        is_fence, next_fence = fence_transition(line, self.fence)
+        if is_fence:
+            self.fence = next_fence
+            self._quote_list_indents.clear()
+            rows = [sgr(row, DIM, self.color) for row in wrap(line, self.width)]
+            return self._emit_rendered(rows)
+        if self.fence is not None:
+            return self._emit_rendered(wrap(line, self.width))
+        if not line.strip():
+            self._quote_list_indents.clear()
+            if self.started:
+                self.blank_rows += 1
+            return []
+        rendered, suppress = render_markdown_line(
+            line, self.width, self._list_indents, self._quote_list_indents, self.color
+        )
+        return self._emit_rendered(rendered, suppress_bullet=suppress)
+
+    def _commit_markdown_line(self, line: str) -> list[str]:
+        out: list[str] = []
+        if self.fence is not None:
+            return self._commit_non_table_line(line)
+        if len(self._table_lines) == 1:
+            header_cells, _ = split_table_cells(self._table_lines[0])
+            if parse_table_alignments(line, len(header_cells)) is not None:
+                self._table_lines.append(line)
+                return out
+            out.extend(self._flush_table())
+        elif len(self._table_lines) >= 2:
+            if is_table_body_row(line):
+                self._table_lines.append(line)
+                return out
+            out.extend(self._flush_table())
+
+        if is_table_header_candidate(line):
+            self._table_lines.append(line)
+            return out
+        out.extend(self._commit_non_table_line(line))
+        return out
 
     def push(self, chunk: str) -> list[str]:
         """Add streamed text and return rows that are now final."""
@@ -398,39 +430,128 @@ class StreamCell:
                 self._pending_escape = raw[match.start() :]
                 raw = raw[: match.start()]
         *complete, self.line = (self.line + sanitize_text(raw)).split("\n")
-        rows = []
+        rows: list[str] = []
+        if self.markdown:
+            for line in complete:
+                rows.extend(self._commit_markdown_line(line))
+            if (
+                len(self._table_lines) == 1
+                and self.line
+                and not can_be_table_delimiter_prefix(self.line)
+            ):
+                rows.extend(self._flush_table())
+            return rows
+
         for line in complete:
-            rows.extend(self._rows(line, wrap(line, self.width)[self.committed :]))
+            rows.extend(self._rows_plain(wrap(line, self.width)[self.committed :]))
             self.committed = 0
-            self._end_line(line)
         current = wrap(self.line, self.width)
-        rows.extend(self._rows(self.line, current[self.committed : len(current) - 1]))
+        rows.extend(self._rows_plain(current[self.committed : len(current) - 1]))
         self.committed = max(self.committed, len(current) - 1)
         return rows
 
     def tail(self) -> list[str]:
-        """Return the row still being written, as it would appear if committed."""
-        row = wrap(self.line, self.width)[-1]
-        if not row.strip():
-            return []
-        blanks = [""] * self.blank_rows if self.started else []
-        return blanks + [self._prefix() + self._style(self.line, row, commit=False)]
+        """Return uncommitted rows as they would appear if committed now."""
+        if not self.markdown:
+            row = wrap(self.line, self.width)[-1]
+            if not row.strip():
+                return []
+            blanks = [""] * self.blank_rows if self.started else []
+            return blanks + [self._prefix() + sgr(row, self.style, self.color)]
+
+        started = self.started
+        blank_rows = self.blank_rows
+        fence = self.fence
+        list_indents = self._list_indents.copy()
+        quote_indents = self._quote_list_indents.copy()
+
+        def preview_emit(rendered_rows: list[str], *, suppress_bullet: bool = False) -> list[str]:
+            nonlocal started, blank_rows
+            out: list[str] = []
+            for row in rendered_rows:
+                if not row.strip():
+                    if started:
+                        blank_rows += 1
+                    continue
+                if started:
+                    out.extend([""] * blank_rows)
+                blank_rows = 0
+                prefix = "  " if (started or suppress_bullet) else self.bullet + " "
+                out.append(prefix + row)
+                started = True
+            return out
+
+        def preview_non_table(line: str) -> list[str]:
+            if not line.strip():
+                return []
+            is_f, _ = fence_transition(line, fence)
+            if is_f:
+                return preview_emit([sgr(r, DIM, self.color) for r in wrap(line, self.width)])
+            if fence is not None:
+                return preview_emit(wrap(line, self.width))
+            rendered, suppress = render_markdown_line(
+                line, self.width, list_indents, quote_indents, self.color
+            )
+            return preview_emit(rendered, suppress_bullet=suppress)
+
+        if len(self._table_lines) >= 2:
+            if not self.line.strip() or self.line.strip() == "|":
+                return preview_emit(
+                    render_table(self._table_lines, self.width, self.color),
+                    suppress_bullet=True,
+                )
+            if is_table_body_row(self.line):
+                return preview_emit(
+                    render_table(self._table_lines + [self.line], self.width, self.color),
+                    suppress_bullet=True,
+                )
+            out = preview_emit(
+                render_table(self._table_lines, self.width, self.color),
+                suppress_bullet=True,
+            )
+            list_indents.clear()
+            quote_indents.clear()
+            out.extend(preview_non_table(self.line))
+            return out
+
+        if len(self._table_lines) == 1:
+            header_cells, _ = split_table_cells(self._table_lines[0])
+            if self.line.strip() and parse_table_alignments(self.line, len(header_cells)) is not None:
+                return preview_emit(
+                    render_table([self._table_lines[0], self.line], self.width, self.color),
+                    suppress_bullet=True,
+                )
+            out = preview_non_table(self._table_lines[0])
+            if self.line.strip():
+                out.extend(preview_non_table(self.line))
+            return out
+
+        return preview_non_table(self.line)
 
     def finish(self) -> list[str]:
-        rows = []
+        rows: list[str] = []
         if self._pending_escape:
             *complete, self.line = (self.line + sanitize_text(self._pending_escape)).split("\n")
             self._pending_escape = ""
             for line in complete:
-                rows.extend(self._rows(line, wrap(line, self.width)[self.committed :]))
-                self.committed = 0
-                self._end_line(line)
-        rows.extend(self._rows(self.line, wrap(self.line, self.width)[self.committed :]))
+                if self.markdown:
+                    rows.extend(self._commit_markdown_line(line))
+                else:
+                    rows.extend(self._rows_plain(wrap(line, self.width)[self.committed :]))
+                    self.committed = 0
+        if self.markdown:
+            if self.line:
+                rows.extend(self._commit_markdown_line(self.line))
+            rows.extend(self._flush_table())
+        else:
+            rows.extend(self._rows_plain(wrap(self.line, self.width)[self.committed :]))
         self.line = ""
         self.committed = 0
         self.blank_rows = 0
         self.fence = None
-        self.inline = (False, False)
+        self._list_indents.clear()
+        self._quote_list_indents.clear()
+        self._table_lines.clear()
         return rows
 
 

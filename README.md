@@ -27,11 +27,15 @@ uv run python main.py 'Find the max_tokens setting in the agent code. Read the s
 uv run python main.py
 ```
 
-The full-screen TUI supports Alt+Enter for a newline, Page Up and Page Down to
-scroll the transcript, and Esc to stop a response. Type `/` to see commands,
-including `/clear`, `/exit`, `/pet`, `/settings`, `/tools`, and `/status`. Piped input uses a
-line-oriented interface. Stop the server with Ctrl-C in its terminal. Avoid
-running dictation inference simultaneously if GPU memory is limited.
+The full-screen TUI supports mouse-wheel and trackpad scrolling (configurable
+via `mouse_scroll_speed` in `settings.json`), Page Up/Page Down, Ctrl-Home/Ctrl-End,
+and Ctrl-T to open the dedicated transcript view (`↑`/`↓` or `j`/`k`, Home/End,
+and `q` or Esc to return), plus Alt+Enter for a newline and Esc to stop a
+response. Scrolling up pauses auto-follow so live responses do not jump the
+viewport. Type `/` to see commands, including `/clear`, `/exit`, `/pet`,
+`/settings`, `/tools`, and `/status`. Piped input uses a line-oriented
+interface. Stop the server with Ctrl-C in its terminal. Avoid running dictation
+inference simultaneously if GPU memory is limited.
 
 Use `/clear` to start a new conversation and clear the full-screen transcript.
 

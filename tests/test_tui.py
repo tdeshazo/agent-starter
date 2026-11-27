@@ -2,10 +2,10 @@ import asyncio
 import io
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -13,6 +13,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.formatted_text import ANSI, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.utils import get_cwidth
 
 from simple_agent.tui import (
@@ -331,6 +332,142 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn(f"\x1b[{BOLD}mbold\x1b[0m", joined)
         self.assertIn(f"\x1b[{DIM}m````markdown\x1b[0m", joined)
         self.assertIn(f"\x1b[{DIM}m~~~sh\x1b[0m", joined)
+
+    def test_markdown_lists_render_bullets_nesting_tasks_and_hanging_indents(self):
+        # Leading list suppresses duplicate assistant turn bullet on row 0.
+        lead_rows = []
+        lead = Transcript(lead_rows.extend, lambda: 34, color=False)
+        lead(
+            data=(
+                "*   **First**: wraps cleanly under the item text\n"
+                "    *   Nested star item that also wraps cleanly\n"
+                "        +   Third-level item\n"
+                "- [x] Finished task\n"
+                "- [ ] Pending task that wraps onto the next row\n\n"
+                "1.  Ordered step that wraps onto a second line\n"
+                "    Continuation line under step one\n"
+                "10. Double-digit step that wraps onto a second line\n\n"
+                "* * *\n\n"
+                "Closing paragraph at root margin.\n"
+            )
+        )
+        lead.end_turn(0)
+
+        self.assertEqual(
+            lead_rows,
+            [
+                "",
+                "  • First: wraps cleanly under the",
+                "    item text",
+                "    ◦ Nested star item that also",
+                "      wraps cleanly",
+                "      ▪ Third-level item",
+                "  ☑ Finished task",
+                "  ☐ Pending task that wraps onto",
+                "    the next row",
+                "",
+                "  1. Ordered step that wraps onto",
+                "     a second line",
+                "     Continuation line under step",
+                "     one",
+                "  10. Double-digit step that wraps",
+                "      onto a second line",
+                "",
+                "  " + "─" * 32,
+                "",
+                "  Closing paragraph at root",
+                "  margin.",
+            ],
+        )
+
+    def test_markdown_tables_align_columns_wrap_cells_and_preserve_code_pipes(self):
+        md = (
+            "| Setting | Default | Override |\n"
+            "| :--- | :---: | ---: |\n"
+            "| **Vulkan** host memory | `str | None` | `a \\| b` |\n"
+            "| Escaped \\| pipe | - Local<br>- Fast wrap check | 日本語 |\n"
+        )
+        for width in (78, 44, 22, 12):
+            rows = []
+            transcript = Transcript(rows.extend, lambda w=width: w, color=True)
+            transcript(data=md)
+            transcript.end_turn(0)
+            plain_rows = [
+                fragment_list_to_text(to_formatted_text(ANSI(row)))
+                for row in rows
+                if row
+            ]
+            for plain in plain_rows:
+                self.assertLessEqual(get_cwidth(plain), width, plain)
+            joined_plain = "\n".join(plain_rows)
+            if width == 78:
+                self.assertIn("str | None", joined_plain)
+                self.assertIn("a | b", joined_plain)
+                self.assertIn("Escaped | pipe", joined_plain)
+            if width >= 44:
+                self.assertIn("日本語", joined_plain)
+            else:
+                self.assertIn("日本", joined_plain)
+                self.assertIn("語", joined_plain)
+            self.assertNotIn("a \\| b", joined_plain)
+            self.assertNotIn("Escaped \\|", joined_plain)
+            if width >= 22:
+                self.assertTrue(plain_rows[0].startswith("  ╭"))
+                self.assertTrue(plain_rows[-1].startswith("  ╰"))
+                # Every row of a bordered table has identical display width.
+                widths = {get_cwidth(r) for r in plain_rows}
+                self.assertEqual(len(widths), 1)
+
+        # Prose containing pipes is not misidentified as a table.
+        prose_rows = []
+        prose = Transcript(prose_rows.extend, lambda: 60, color=False)
+        prose(data="Run cmd1 | cmd2 in bash\nNext line of output\n")
+        prose.end_turn(0)
+        self.assertEqual(
+            prose_rows,
+            ["", "• Run cmd1 | cmd2 in bash", "  Next line of output"],
+        )
+
+    def test_markdown_streaming_char_by_char_matches_batch_and_previews_live_tail(self):
+        doc = (
+            "## Overview\n\n"
+            "Keep `snake_case`, 2 * 3 * 4, `src/*.py` vs tests/*.py, and def f(**kw, **other).\n"
+            "Style *italic*, **bold**, ***both***, ~~strike~~, and [Guide](https://example.com/a_b).\n\n"
+            "> Quote with **bold** and wrapped words:\n"
+            "> - Quoted bullet one\n"
+            ">   - Quoted nested bullet\n\n"
+            "| Col A | Col B |\n"
+            "| --- | ---: |\n"
+            "| alpha | 42 |\n"
+            "| beta | 100 |\n"
+        )
+        batch_rows = []
+        batch = Transcript(batch_rows.extend, lambda: 52, color=True)
+        batch(data=doc)
+        batch.end_turn(0)
+
+        streamed_rows = []
+        saw_live_table = False
+        streamed = Transcript(streamed_rows.extend, lambda: 52, color=True)
+        for char in doc:
+            streamed(data=char)
+            tail = streamed.tail()
+            for row in tail:
+                plain = fragment_list_to_text(to_formatted_text(ANSI(row)))
+                self.assertLessEqual(get_cwidth(plain), 52)
+                if "╭" in plain:
+                    saw_live_table = True
+        streamed.end_turn(0)
+
+        self.assertTrue(saw_live_table)
+        self.assertEqual(streamed_rows, batch_rows)
+        joined_plain = "\n".join(
+            fragment_list_to_text(to_formatted_text(ANSI(row))) for row in streamed_rows
+        )
+        self.assertIn("2 * 3 * 4", joined_plain)
+        self.assertIn("def f(**kw, **other)", joined_plain)
+        self.assertIn("Guide", joined_plain)
+        self.assertIn("(https://example.com/a_b)", joined_plain)
 
     def test_session_box_empty_fields_and_transcript_errors_and_usage(self):
         box = session_box(None, None, "", "0.1.0", width=80, color=False)
@@ -677,3 +814,154 @@ class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
                     if not app.done():
                         app.cancel()
                         await asyncio.gather(app, return_exceptions=True)
+
+    async def test_fullscreen_mouse_wheel_sticky_follow_and_jump_shortcuts(self):
+        stream_ready = asyncio.Event()
+        more_chunks = asyncio.Event()
+        finish_turn = asyncio.Event()
+
+        async def invoke(_prompt):
+            agent.callback_handler(
+                data="".join(f"Line {index:02d}\n" for index in range(1, 31))
+            )
+            stream_ready.set()
+            await more_chunks.wait()
+            agent.callback_handler(data="Streamed while scrolled up\n")
+            await finish_turn.wait()
+
+        agent = SimpleNamespace(messages=[], invoke_async=invoke)
+        buf = io.StringIO()
+        vt_output = Vt100_Output(buf, lambda: Size(rows=14, columns=80))
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "settings.json"
+            config.write_text('{"mouse_scroll_speed": 0.5}\n', encoding="utf-8")
+            with create_pipe_input() as terminal:
+                tui = AgentTui(
+                    lambda: agent,
+                    input=terminal,
+                    output=vt_output,
+                    color=False,
+                    config_path=config,
+                )
+                self.assertTrue(tui.app.full_screen)
+                app = asyncio.create_task(tui.run_async())
+                try:
+                    await asyncio.sleep(0.05)
+                    self.assertTrue(tui.app.renderer._in_alternate_screen)
+                    self.assertTrue(tui.app.renderer._mouse_support_enabled)
+
+                    terminal.send_text("Generate lines\r")
+                    await asyncio.wait_for(stream_ready.wait(), timeout=2)
+                    await asyncio.sleep(0.05)
+                    self.assertIsNone(tui._history.first_line)
+
+                    # Clicking the transcript does not steal keyboard focus from the composer.
+                    self.assertTrue(tui.app.layout.has_focus(tui._composer))
+                    self.assertFalse(tui._history.is_focusable())
+
+                    # Fractional mouse_scroll_speed (0.5 * 3 = 1.5) accumulates smoothly:
+                    # tick 1 scrolls 1 row, tick 2 scrolls 2 rows (total 3 rows).
+                    sgr_wheel_up = b"\x1b[<64;10;2M"
+                    terminal.send_bytes(sgr_wheel_up)
+                    await asyncio.sleep(0.05)
+                    first_after_one_tick = tui._history.first_line
+                    self.assertIsNotNone(first_after_one_tick)
+                    terminal.send_bytes(sgr_wheel_up)
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(tui._history.first_line, first_after_one_tick - 2)
+                    self.assertIn("↑ scrolled", tui._footer_status())
+
+                    # Wheel events over the pinned composer also scroll the transcript when
+                    # the composer itself does not overflow.
+                    before_composer_wheel = tui._history.first_line
+                    terminal.send_bytes(b"\x1b[<64;5;12M")
+                    await asyncio.sleep(0.05)
+                    self.assertLess(tui._history.first_line, before_composer_wheel)
+
+                    # Ctrl+Home jumps to top; streaming new lines preserves the reading position.
+                    terminal.send_bytes(b"\x1b[1;5H")
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(tui._history.first_line, 0)
+                    more_chunks.set()
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(tui._history.first_line, 0)
+
+                    # Ctrl+End jumps back to bottom and re-engages live follow mode.
+                    terminal.send_bytes(b"\x1b[1;5F")
+                    await asyncio.sleep(0.05)
+                    self.assertIsNone(tui._history.first_line)
+                    self.assertNotIn("↑ scrolled", tui._footer_status())
+
+                    finish_turn.set()
+                    await asyncio.wait_for(asyncio.shield(tui.task), timeout=2)
+                    terminal.send_text("/exit\r")
+                    await asyncio.wait_for(app, timeout=2)
+                finally:
+                    more_chunks.set()
+                    finish_turn.set()
+                    if not app.done():
+                        app.cancel()
+                        await asyncio.gather(app, return_exceptions=True)
+
+    async def test_ctrl_t_transcript_overlay_supports_vim_keys_and_preserves_running_turn(self):
+        stream_ready = asyncio.Event()
+        finish_turn = asyncio.Event()
+
+        async def invoke(_prompt):
+            agent.callback_handler(
+                data="".join(f"Row {index:02d}\n" for index in range(1, 26))
+            )
+            stream_ready.set()
+            await finish_turn.wait()
+
+        agent = SimpleNamespace(messages=[], invoke_async=invoke)
+        buf = io.StringIO()
+        vt_output = Vt100_Output(buf, lambda: Size(rows=12, columns=80))
+        with tempfile.TemporaryDirectory() as tmp, create_pipe_input() as terminal:
+            tui = AgentTui(
+                lambda: agent,
+                input=terminal,
+                output=vt_output,
+                color=False,
+                config_path=Path(tmp) / "settings.json",
+            )
+            app = asyncio.create_task(tui.run_async())
+            try:
+                terminal.send_text("Inspect overlay\r")
+                await asyncio.wait_for(stream_ready.wait(), timeout=2)
+                await asyncio.sleep(0.05)
+
+                # Ctrl+T enters transcript focus mode; g/j/k/G navigate without typing into buffer.
+                terminal.send_bytes(b"\x14")
+                await asyncio.sleep(0.05)
+                self.assertTrue(tui._in_pager)
+                self.assertTrue(tui._history.is_focusable())
+
+                terminal.send_text("g")
+                await asyncio.sleep(0.05)
+                self.assertEqual(tui._history.first_line, 0)
+                terminal.send_text("jjk")
+                await asyncio.sleep(0.05)
+                self.assertEqual(tui._history.first_line, 1)
+                self.assertEqual(tui.buffer.text, "")
+
+                terminal.send_text("G")
+                await asyncio.sleep(0.05)
+                self.assertIsNone(tui._history.first_line)
+
+                # Esc exits the overlay back to the composer without cancelling the running turn.
+                terminal.send_bytes(b"\x1b")
+                await asyncio.sleep(0.15)
+                self.assertFalse(tui._in_pager)
+                self.assertTrue(tui.running)
+                self.assertTrue(tui.app.layout.has_focus(tui._composer))
+
+                finish_turn.set()
+                await asyncio.wait_for(asyncio.shield(tui.task), timeout=2)
+                terminal.send_text("/exit\r")
+                await asyncio.wait_for(app, timeout=2)
+            finally:
+                finish_turn.set()
+                if not app.done():
+                    app.cancel()
+                    await asyncio.gather(app, return_exceptions=True)
