@@ -45,6 +45,37 @@ save, or Esc to cancel. An empty system prompt disables it. Saved settings apply
 to the next response and persist across launches, including one-shot and piped
 use. Saving keeps the current conversation.
 
+### Markdown appearance and copying
+
+Markdown headings and table headers use a color scheme modeled on
+[Codex's Markdown renderer](https://github.com/openai/codex/blob/045a11fe2c701df09dd31d55e8c3f05e79cc4a77/codex-rs/tui/src/markdown_render.rs):
+rose for level-one headings, peach for level two, and yellow for lower headings
+and table headers. Heading levels also use bold, underline, and italic styles.
+The palette adapts to light backgrounds reported by `COLORFGBG`, with darker
+light-theme accents for readability. `NO_COLOR` disables Markdown styling.
+
+In the full-screen transcript, including the Ctrl-T view:
+
+- Drag with the left mouse button to select text. Double-click selects a word,
+  triple-click selects a line, and Shift-click extends a selection.
+- Press **Ctrl-C** or **Ctrl-Insert** to copy selected text. Copying preserves a
+  running response and the input draft. Selected input text can be copied with
+  the same shortcuts.
+- Press **Esc** to clear the selection, or start typing in the composer.
+  With no selection, Ctrl-C keeps its usual interrupt, clear-input, or quit behavior.
+- Responses continue in the background while selected transcript text stays
+  fixed. Clear the selection to see new output; Ctrl-End resumes following it
+  if the viewport is scrolled up. Mouse-wheel scrolling remains available.
+
+Copying uses the native clipboard when available (`pbcopy` on macOS,
+`wl-copy` on Wayland, `xclip` or `xsel` on X11, and `clip.exe` on Windows/WSL).
+Otherwise it sends an OSC 52 clipboard request to an interactive terminal,
+including tmux passthrough. The footer distinguishes a confirmed native copy
+from a request sent to the terminal; terminal clipboard permissions may require
+configuration. Copying transfers the displayed text without ANSI color codes.
+You can also use your terminal's native selection override (usually Shift-drag,
+or Option-drag in some macOS terminals) and its usual copy shortcut.
+
 ## Hardware settings
 
 Port 8088 keeps this server separate from dictation's 8087. Defaults are taken
@@ -119,6 +150,8 @@ Agent setup lives in the `simple_agent` package:
 Import the factory with `from simple_agent import create_agent`. Each call creates
 fresh conversation state. `simple_agent/cli.py` selects the interface, and
 `simple_agent/tui/` handles interactive input and transcript rendering.
+Within the TUI, `history.py` owns transcript selection and `clipboard.py` owns
+native and terminal clipboard writes; `markdown.py` owns Markdown styling and layout.
 Keep tool argument types and docstrings explicit.
 
 - `search_text(query)` searches the current working directory recursively for a

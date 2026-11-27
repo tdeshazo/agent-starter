@@ -2,16 +2,15 @@
 import asyncio
 import time
 from collections.abc import Callable
-from functools import cache
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI, fragment_list_to_text, to_formatted_text
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.input import Input
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.key_binding.defaults import load_key_bindings
 from prompt_toolkit.keys import Keys
@@ -24,7 +23,7 @@ from prompt_toolkit.layout import (
     Window,
     WindowAlign,
 )
-from prompt_toolkit.layout.controls import BufferControl, UIContent, UIControl
+from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
@@ -33,13 +32,14 @@ from prompt_toolkit.styles import Style
 
 from ..conversation import Conversation, InvocationError
 from ..preferences import PET_NAMES, UserPreferences
+from .clipboard import copy_text
 from .commands import COMMANDS, command_output, matching_commands, parse_slash_command
+from .history import TranscriptControl
 from .pets import PETS, pet_rows, pet_width
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, sgr, shimmer
 from .session import header_context, session_info
 from .terminal import use_color
 from .transcript import Transcript
-
 
 PLACEHOLDER = "Ask the agent anything"
 ESCAPE_TIMEOUT = 0.1
@@ -50,9 +50,12 @@ MOUSE_SCROLL_LINES = 3
 class _WheelFallbackWindow(Window):
     """Delegate mouse-wheel events unless this window can scroll its own content."""
 
-    def __init__(self, *args, on_wheel: Callable[[int], None], **kwargs):
+    def __init__(
+        self, *args, on_wheel: Callable[[int], None], on_mouse_release: Callable[[], None], **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._on_wheel = on_wheel
+        self._on_mouse_release = on_mouse_release
 
     def _can_scroll_self(self, direction: int) -> bool:
         info = self.render_info
@@ -63,6 +66,9 @@ class _WheelFallbackWindow(Window):
         return info.last_visible_line() < info.content_height - 1
 
     def _mouse_handler(self, mouse_event: MouseEvent):
+        if mouse_event.event_type == MouseEventType.MOUSE_UP:
+            self._on_mouse_release()
+            return None
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
             if self._can_scroll_self(-1):
                 return super()._mouse_handler(mouse_event)
@@ -76,57 +82,16 @@ class _WheelFallbackWindow(Window):
         return super()._mouse_handler(mouse_event)
 
 
-class TranscriptControl(UIControl):
-    """Provide the transcript to prompt-toolkit, formatting rows as it reads them."""
+class _ComposerControl(BufferControl):
+    """Clear transcript selection on a composer click and finish cross-pane drags."""
 
-    def __init__(
-        self,
-        tail: Callable[[], list[str]],
-        on_width_change: Callable[[int], None] | None = None,
-        on_wheel: Callable[[int], None] | None = None,
-        focusable: Callable[[], bool] | None = None,
-    ):
-        self.rows: list[str] = []
-        self.tail = tail
-        self.on_width_change = on_width_change
-        self.on_wheel = on_wheel
-        self._focusable = focusable
-        self.first_line: int | None = None
-
-    def is_focusable(self) -> bool:
-        return self._focusable() if self._focusable is not None else False
+    def __init__(self, *args, on_mouse: Callable[[MouseEvent], None], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_mouse = on_mouse
 
     def mouse_handler(self, mouse_event: MouseEvent):
-        if self.on_wheel is not None:
-            if mouse_event.event_type == MouseEventType.SCROLL_UP:
-                self.on_wheel(-1)
-                return None
-            if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-                self.on_wheel(1)
-                return None
-        return NotImplemented
-
-    def create_content(self, width: int, height: int | None) -> UIContent:
-        if self.on_width_change is not None:
-            self.on_width_change(width)
-        committed = len(self.rows)
-        tail = self.tail()
-        count = committed + len(tail)
-        if not count:
-            return UIContent(line_count=1, show_cursor=False)
-
-        @cache
-        def get_line(index: int):
-            line = self.rows[index] if index < committed else tail[index - committed]
-            return to_formatted_text(ANSI(line))
-
-        if self.first_line is None:
-            row = count - 1
-            column = len(fragment_list_to_text(get_line(row)))
-        else:
-            row = min(self.first_line, count - 1)
-            column = 0
-        return UIContent(get_line, count, cursor_position=Point(column, row), show_cursor=False)
+        self._on_mouse(mouse_event)
+        return super().mouse_handler(mouse_event)
 
 
 class AgentTui:
@@ -141,6 +106,9 @@ class AgentTui:
         output: Output | None = None,
         color: bool | None = None,
     ):
+        # prompt-toolkit defines ControlInsert but omits its standard xterm
+        # sequence. Preserve any mapping supplied by a future library version.
+        ANSI_SEQUENCES.setdefault("\x1b[2;5~", Keys.ControlInsert)
         self.conversation = conversation
         self._header_context = header_context()
         self.color = use_color() if color is None else color
@@ -154,6 +122,9 @@ class AgentTui:
         self._pet_picker_index: int | None = None
         self._editing_settings = False
         self._settings_error = ""
+        self._copy_status = ""
+        self._copy_task: asyncio.Task | None = None
+        self._pending_copy: str | None = None
         self._name_buffer = Buffer(multiline=False)
         self._system_prompt_buffer = Buffer(multiline=True)
         self.transcript = Transcript(self._emit, self._width, self.color)
@@ -162,13 +133,19 @@ class AgentTui:
             on_width_change=self._sync_width,
             on_wheel=self._scroll_wheel,
             focusable=lambda: self._in_pager,
+            on_select=self._selection_changed,
         )
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
         self.conversation.observe(self.transcript)
         self.task: asyncio.Task | None = None
         self.turn_started = 0.0
         self.stop_requested = False
-        self.buffer = Buffer(multiline=True, history=InMemoryHistory())
+        self.buffer = Buffer(
+            multiline=True,
+            history=InMemoryHistory(),
+            on_text_changed=lambda _: self._clear_selection(),
+            on_cursor_position_changed=lambda _: self._clear_selection(),
+        )
         self.app = Application(
             layout=self._layout(),
             key_bindings=merge_key_bindings([load_key_bindings(), self._bindings()]),
@@ -202,6 +179,68 @@ class AgentTui:
         self._history.rows.extend(lines)
         self.app.invalidate()
 
+    # Selection and clipboard
+
+    def _selection_changed(self) -> None:
+        self._copy_status = ""
+        self.app.current_buffer.exit_selection()
+        info = self._history_window.render_info
+        if (
+            self._history.has_selection
+            and self._history.first_line is None
+            and info is not None
+            and info.content_height > info.window_height
+        ):
+            # Keep the visible rows in place even when the working indicator
+            # disappears or the composer changes height during a selection.
+            self._history.first_line = info.first_visible_line()
+            self._history_window.vertical_scroll = self._history.first_line
+
+    def _clear_selection(self) -> None:
+        self._history.clear_selection()
+        self._copy_status = ""
+
+    def _composer_mouse(self, mouse_event: MouseEvent) -> None:
+        if mouse_event.event_type == MouseEventType.MOUSE_DOWN:
+            self._clear_selection()
+        elif mouse_event.event_type == MouseEventType.MOUSE_UP:
+            self._history.end_drag()
+
+    def _has_selection(self) -> bool:
+        buffer = self.app.current_buffer
+        return self._history.has_selection or (
+            buffer.selection_state is not None
+            and buffer.document.selection_range()[0] != buffer.document.selection_range()[1]
+        )
+
+    def _copy_selection(self) -> bool:
+        # A newly selected composer/settings range takes precedence over a
+        # transcript selection. Reading the document never cuts or clears it.
+        buffer = self.app.current_buffer
+        text = buffer.document.cut_selection()[1].text if buffer.selection_state is not None else ""
+        if not text:
+            text = self._history.selected_text()
+        if not text:
+            return False
+        self.app.clipboard.set_text(text)
+        self._pending_copy = text
+        self._copy_status = "Copying selection…"
+        if self._copy_task is None or self._copy_task.done():
+            self._copy_task = self.app.create_background_task(self._write_clipboard())
+        return True
+
+    async def _write_clipboard(self) -> None:
+        # Serialize writes so a slower native clipboard cannot overwrite a
+        # newer request. Coalesce repeated requests to the latest selection.
+        while self._pending_copy is not None:
+            text, self._pending_copy = self._pending_copy, None
+            status = await copy_text(text, self.app.output)
+            if self._pending_copy is None:
+                self._copy_status = status
+                # Retain selection for retry, including a newer selection made
+                # while awaiting the native clipboard.
+                self.app.invalidate()
+
     # Transcript overlay (Ctrl+T)
 
     def _open_pager(self) -> None:
@@ -215,6 +254,7 @@ class AgentTui:
         if not self._in_pager:
             return
         self._in_pager = False
+        self._clear_selection()
         self.app.layout.focus(self._composer)
         self.app.invalidate()
 
@@ -227,6 +267,7 @@ class AgentTui:
     # Pet selection
 
     def _open_pet_picker(self) -> None:
+        self._clear_selection()
         self._pet_picker_index = PET_NAMES.index(self.pet)
         self.app.layout.focus(self._picker_window)
         self.app.invalidate()
@@ -258,6 +299,7 @@ class AgentTui:
     # Agent settings
 
     def _open_settings(self) -> None:
+        self._clear_selection()
         details = self.conversation.details()
         name, prompt = details.name, details.system_prompt
         self._name_buffer.reset(Document(name, len(name)))
@@ -313,7 +355,12 @@ class AgentTui:
             return [("", "  ")]
 
         def wheel_window(*args, **kwargs) -> Window:
-            return _WheelFallbackWindow(*args, on_wheel=self._handle_surface_wheel, **kwargs)
+            return _WheelFallbackWindow(
+                *args,
+                on_wheel=self._handle_surface_wheel,
+                on_mouse_release=self._history.end_drag,
+                **kwargs,
+            )
 
         in_pager = Condition(lambda: self._in_pager)
         in_picker = ~in_pager & Condition(lambda: self._pet_picker_index is not None)
@@ -324,8 +371,9 @@ class AgentTui:
         is_empty = Condition(lambda: not self.buffer.text)
 
         self._composer = wheel_window(
-            BufferControl(
+            _ComposerControl(
                 self.buffer,
+                on_mouse=self._composer_mouse,
                 input_processors=[
                     ConditionalProcessor(AfterInput(PLACEHOLDER, style="class:placeholder"), is_empty)
                 ],
@@ -487,29 +535,33 @@ class AgentTui:
         art = [""] * top_pad + art + [""] * (height - len(art) - top_pad)
         rows = [
             (styled + " " * (col_width - len(plain)) + art_line).rstrip()
-            for (plain, styled), art_line in zip(left, art)
+            for (plain, styled), art_line in zip(left, art, strict=False)
         ]
         rows.extend(["", desc_line])
         return rows
 
     def _footer_hints(self) -> str:
-        if self._in_pager:
-            hints = ["↑/↓ scroll", "PgUp/PgDn page", "Home/End jump", "q/esc back"]
+        if self._has_selection():
+            hints = ["⌃C / Ctrl-Insert copy", "esc clear selection"]
+        elif self._in_pager:
+            hints = ["drag select", "↑/↓ scroll", "PgUp/PgDn page", "Home/End jump", "q/esc back"]
         elif self._editing_settings:
             hints = ["tab switch field", "⌃S save", "esc cancel"]
         elif self._pet_picker_index is not None:
             hints = ["↑/↓ choose", "⏎ select", "esc cancel"]
         elif self.running:
-            hints = ["esc interrupt", "⌃T transcript", "⌃C interrupt"]
+            hints = ["drag select", "esc interrupt", "⌃T transcript", "⌃C interrupt"]
         elif matching_commands(self.buffer.text):
             hints = ["tab complete", "⏎ run"]
         elif self.buffer.text:
             hints = ["⏎ send", "⌥⏎ newline", "⌃C clear"]
         else:
-            hints = ["⏎ send", "⌥⏎ newline", "/ commands", "PgUp/PgDn scroll", "⌃T transcript", "⌃C quit"]
+            hints = ["drag select", "⏎ send", "⌥⏎ newline", "/ commands", "⌃T transcript", "⌃C quit"]
         return "  " + sgr("   ".join(hints), DIM, self.color)
 
     def _footer_status(self) -> str:
+        if self._copy_status:
+            return sgr(self._copy_status + "  ", DIM, self.color)
         parts = []
         if not self._in_pager and self._history.first_line is not None:
             parts.append("↑ scrolled")
@@ -734,6 +786,8 @@ class AgentTui:
 
         @bindings.add("c-c")
         def control_c(event):
+            if self._copy_selection():
+                return
             if self._in_pager:
                 self._close_pager()
             elif self._editing_settings:
@@ -746,6 +800,15 @@ class AgentTui:
                 self.buffer.reset()
             else:
                 self.app.exit()
+
+        @bindings.add("c-insert", filter=Condition(self._has_selection))
+        def copy_selection(event):
+            self._copy_selection()
+
+        @bindings.add("escape", eager=True, filter=Condition(self._has_selection))
+        def clear_selection(event):
+            self._clear_selection()
+            self.app.current_buffer.exit_selection()
 
         @bindings.add("c-d", filter=in_composer)
         def control_d(event):

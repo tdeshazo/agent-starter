@@ -12,6 +12,12 @@ CYAN = "36"
 BOLD_RED = "1;38;5;174"
 BOLD_RED_LIGHT = "1;38;5;124"
 
+# Codex's default Catppuccin Mocha / Latte markup-heading palette, with Latte
+# accents adjusted to 4.5:1 on its light base (#eff1f5) as in Codex's contrast
+# helper. prompt-toolkit adapts RGB colors to the terminal's supported depth.
+HEADING_COLORS_DARK = ("38;2;243;139;168", "38;2;250;179;135", "38;2;249;226;175")
+HEADING_COLORS_LIGHT = ("38;2;210;15;57", "38;2;188;74;8", "38;2;153;98;20")
+
 BULLETS = ("•", "◦", "▪")
 
 WORD = re.compile(r"([^\S\n]*)(\S+)")
@@ -53,6 +59,19 @@ def sgr(text: str, codes: str, color: bool = True) -> str:
 
 def bold_markdown_style(light: bool = False) -> str:
     return BOLD_RED_LIGHT if light else BOLD_RED
+
+
+def heading_markdown_style(level: int, light: bool = False) -> str:
+    """Match Codex's heading colors and typographic hierarchy for levels 1–6."""
+    palette = HEADING_COLORS_LIGHT if light else HEADING_COLORS_DARK
+    attributes = ("1;4", BOLD, "1;3", ITALIC, ITALIC, ITALIC)[level - 1]
+    return f"{attributes};{palette[min(level - 1, 2)]}"
+
+
+def table_header_style(light: bool = False) -> str:
+    """Use Codex's yellow type-name accent for table headings and stacked labels."""
+    palette = HEADING_COLORS_LIGHT if light else HEADING_COLORS_DARK
+    return f"{BOLD};{palette[2]}"
 
 
 def _split_sgr_tokens(codes: str) -> list[str]:
@@ -348,7 +367,8 @@ def render_markdown_line(
 
     if heading_match := ATX_HEADING.match(expanded):
         list_stack.clear()
-        spans = parse_inline(heading_match.group(3), base_style=BOLD, light=light)
+        style = heading_markdown_style(len(heading_match.group(2)), light)
+        spans = parse_inline(heading_match.group(3), base_style=style, light=light)
         if not spans:
             return [], False
         return [styled for styled, _ in wrap_spans(spans, width, color)], False
@@ -706,7 +726,8 @@ def render_table(
             cells = cells[:col_count]
         body_raw_rows.append(cells)
 
-    header_cells = [_parse_cell_sublines(cell, BOLD, color, light) for cell in header_raw]
+    header_style = table_header_style(light)
+    header_cells = [_parse_cell_sublines(cell, header_style, color, light) for cell in header_raw]
     body_cells = [
         [_parse_cell_sublines(cell, "", color, light) for cell in row]
         for row in body_raw_rows
@@ -721,9 +742,13 @@ def render_table(
                 stacked.append(sgr("─" * max(width, 1), DIM, color))
             for col_idx, value in enumerate(row):
                 label = header_raw[col_idx]
-                entry = f"**{label}**: {value}" if body_raw_rows and label else (value or label)
-                if entry:
-                    spans = parse_inline(entry, light=light)
+                if body_raw_rows and label:
+                    spans = parse_inline(label, base_style=header_style, light=light)
+                    spans += [(": ", "")] + parse_inline(value, light=light)
+                else:
+                    style = "" if body_raw_rows else header_style
+                    spans = parse_inline(value or label, base_style=style, light=light)
+                if spans:
                     stacked.extend(styled for styled, _ in wrap_spans(spans, width, color))
         return stacked
 
