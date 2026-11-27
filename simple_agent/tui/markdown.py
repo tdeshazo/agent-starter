@@ -3,13 +3,16 @@ import re
 
 from prompt_toolkit.utils import get_cwidth
 
+from .terminal import light_background
+
 BOLD = "1"
 DIM = "2"
 ITALIC = "3"
 UNDERLINE = "4"
 STRIKE = "9"
-BOLD_ITALIC = "1;3"
 CYAN = "36"
+BOLD_RED = "1;38;5;174"
+BOLD_RED_LIGHT = "1;38;5;124"
 
 BULLETS = ("•", "◦", "▪")
 
@@ -50,17 +53,46 @@ def sgr(text: str, codes: str, color: bool = True) -> str:
     return text
 
 
+def bold_markdown_style() -> str:
+    return BOLD_RED_LIGHT if light_background() else BOLD_RED
+
+
+def _split_sgr_tokens(codes: str) -> list[str]:
+    parts = [part for part in codes.split(";") if part]
+    tokens: list[str] = []
+    idx = 0
+    while idx < len(parts):
+        head = parts[idx]
+        if head in {"38", "48"} and idx + 1 < len(parts):
+            mode = parts[idx + 1]
+            step = 3 if mode == "5" else (5 if mode == "2" else 1)
+            tokens.append(";".join(parts[idx : idx + step]))
+            idx += step
+        else:
+            tokens.append(head)
+            idx += 1
+    return tokens
+
+
+def _is_fg_token(token: str) -> bool:
+    if token.startswith("38;"):
+        return True
+    return token.isdigit() and (30 <= int(token) <= 39 or 90 <= int(token) <= 97)
+
+
 def combine_sgr(base: str, extra: str) -> str:
     """Combine two semicolon-delimited SGR code strings without duplicates."""
     if not base:
         return extra
     if not extra:
         return base
-    parts = base.split(";")
-    for code in extra.split(";"):
-        if code and code not in parts:
-            parts.append(code)
-    return ";".join(parts)
+    tokens = _split_sgr_tokens(base)
+    for token in _split_sgr_tokens(extra):
+        if _is_fg_token(token):
+            tokens = [existing for existing in tokens if not _is_fg_token(existing)]
+        if token not in tokens:
+            tokens.append(token)
+    return ";".join(tokens)
 
 
 def split_width(text: str, width: int) -> tuple[str, str]:
@@ -181,6 +213,8 @@ def parse_inline(text: str, base_style: str = "") -> list[tuple[str, str]]:
         return f"\ue000{idx}\ue001"
 
     masked = ATOM_RE.sub(replace_atom, text)
+    strong_style = bold_markdown_style()
+    strong_italic_style = combine_sgr(strong_style, ITALIC)
 
     def parse_masked(segment: str, style: str) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
@@ -196,9 +230,9 @@ def parse_inline(text: str, base_style: str = "") -> list[tuple[str, str]]:
                 if url_plain and url_plain != label_plain and url_plain != f"mailto:{label_plain}":
                     out.append((f" ({url_plain})", combine_sgr(style, DIM)))
             elif (inner := match.group(3) or match.group(4)) is not None:
-                out.extend(parse_masked(inner, combine_sgr(style, BOLD_ITALIC)))
+                out.extend(parse_masked(inner, combine_sgr(style, strong_italic_style)))
             elif (inner := match.group(5) or match.group(6)) is not None:
-                out.extend(parse_masked(inner, combine_sgr(style, BOLD)))
+                out.extend(parse_masked(inner, combine_sgr(style, strong_style)))
             elif (inner := match.group(7) or match.group(8)) is not None:
                 out.extend(parse_masked(inner, combine_sgr(style, ITALIC)))
             elif (inner := match.group(9)) is not None:

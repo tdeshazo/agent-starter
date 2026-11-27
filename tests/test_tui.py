@@ -32,7 +32,16 @@ from simple_agent.tui import (
 )
 from simple_agent.tui.app import matching_commands
 from simple_agent.tui.pets import PETS, settings_path
-from simple_agent.tui.rendering import BOLD, BOLD_CYAN, DIM, USER_TEXT, USER_TEXT_LIGHT, session_box
+from simple_agent.tui.rendering import (
+    BOLD_CYAN,
+    BOLD_RED,
+    BOLD_RED_LIGHT,
+    CYAN,
+    DIM,
+    USER_TEXT,
+    USER_TEXT_LIGHT,
+    session_box,
+)
 from simple_agent.tui.session import total_tokens
 
 
@@ -313,25 +322,34 @@ class TranscriptTests(unittest.TestCase):
             )
 
     def test_markdown_fences_handle_nested_backticks_tildes_and_inline_spans(self):
-        cell = StreamCell(width=80, bullet="•", color=True, markdown=True)
-        rows = cell.push(
-            "````markdown\n"
-            "```python\n"
-            "**still literal**\n"
-            "```\n"
-            "````\n"
-            "~~~sh\n"
-            "**also literal**\n"
-            "~~~\n"
-            "```inline``` **bold**\n"
-        )
-        rows.extend(cell.finish())
+        with mock.patch.dict(os.environ, {"COLORFGBG": "15;0"}):
+            cell = StreamCell(width=80, bullet="•", color=True, markdown=True)
+            rows = cell.push(
+                "````markdown\n"
+                "```python\n"
+                "**still literal**\n"
+                "```\n"
+                "````\n"
+                "~~~sh\n"
+                "**also literal**\n"
+                "~~~\n"
+                "```inline``` **bold** ***both*** **with `code`**\n"
+            )
+            rows.extend(cell.finish())
         joined = "\n".join(rows)
         self.assertIn("  **still literal**", joined)
         self.assertIn("  **also literal**", joined)
-        self.assertIn(f"\x1b[{BOLD}mbold\x1b[0m", joined)
+        self.assertIn(f"\x1b[{CYAN}minline\x1b[0m", joined)
+        self.assertIn(f"\x1b[{BOLD_RED}mbold\x1b[0m", joined)
+        self.assertIn(f"\x1b[{BOLD_RED};3mboth\x1b[0m", joined)
+        self.assertIn(f"\x1b[{BOLD_CYAN}mcode\x1b[0m", joined)
         self.assertIn(f"\x1b[{DIM}m````markdown\x1b[0m", joined)
         self.assertIn(f"\x1b[{DIM}m~~~sh\x1b[0m", joined)
+
+        with mock.patch.dict(os.environ, {"COLORFGBG": "0;15"}):
+            light_cell = StreamCell(width=80, bullet="•", color=True, markdown=True)
+            light_rows = light_cell.push("**bold**\n") + light_cell.finish()
+        self.assertIn(f"\x1b[{BOLD_RED_LIGHT}mbold\x1b[0m", "\n".join(light_rows))
 
     def test_markdown_lists_render_bullets_nesting_tasks_and_hanging_indents(self):
         # Leading list suppresses duplicate assistant turn bullet on row 0.

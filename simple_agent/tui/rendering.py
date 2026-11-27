@@ -8,12 +8,15 @@ from prompt_toolkit.utils import get_cwidth
 from ..settings import DEFAULT_AGENT_NAME
 from .markdown import (
     BOLD,
+    BOLD_RED,
+    BOLD_RED_LIGHT,
     CYAN,
     DIM,
     ITALIC,
     STRIKE,
     UNDERLINE,
     WORD,
+    bold_markdown_style,
     can_be_table_delimiter_prefix,
     fence_transition,
     is_table_body_row,
@@ -42,6 +45,8 @@ RED = "31"
 __all__ = [
     "BOLD",
     "BOLD_CYAN",
+    "BOLD_RED",
+    "BOLD_RED_LIGHT",
     "CYAN",
     "DIM",
     "ITALIC",
@@ -53,6 +58,7 @@ __all__ = [
     "UNDERLINE",
     "USER_TEXT",
     "USER_TEXT_LIGHT",
+    "bold_markdown_style",
     "error_cell",
     "format_elapsed",
     "format_tokens",
