@@ -36,16 +36,16 @@ window.ATLAS_EXERCISES = [
     id: "ex-3",
     level: "Level 3 · Extend Safely",
     subsystem: "Tools & Workspace Security",
-    title: "Design a Safe `list_directory` Tool Following `tools.py` Invariants",
+    title: "Design a Safe `list_directory` Tool Following the Workspace Tool Rules",
     goal: "Practice designing a new Strands `@tool` that upholds every security and resource-budget invariant already enforced by `read_file` and `search_text`.",
-    targets: ["simple_agent/tools.py:14-72", "simple_agent/tools.py:142-255", "simple_agent/prompts.py:3-10", "tests/test_tools.py"],
+    targets: ["simple_agent/tools/workspace_files.py", "simple_agent/tools/workspace.py", "simple_agent/tools/__init__.py", "simple_agent/prompts.py:3-10", "tests/test_tools.py"],
     task: "Design (on paper or in a scratch branch) a `list_directory(path: str = '.') -> str` tool:\n1) Which flags should open the target directory?\n2) Which entries must be hidden or skipped?\n3) What output cap (entry count & byte limit) and truncation notice should it enforce?\n4) Which files must be updated to wire it into the agent and document it for the model?",
     verifyCmd: ".venv/bin/python -m unittest tests.test_tools -v",
     hints: [
-      "Check `DIRECTORY_READ_FLAGS` (`os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY`) and `_is_sensitive_path()` in `simple_agent/tools.py`.",
-      "Remember to register in `DEFAULT_TOOLS` (`tools.py:255`) and align `SYSTEM_PROMPT` (`prompts.py:3-10`) so Gemma knows when to invoke it."
+      "Check `DIRECTORY_READ_FLAGS` (`os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY`) and `_is_sensitive_path()` in `simple_agent/tools/workspace_files.py`.",
+      "Remember to register in `DEFAULT_TOOLS` (`simple_agent/tools/__init__.py`) and align `SYSTEM_PROMPT` (`prompts.py:3-10`) so Gemma knows when to invoke it."
     ],
-    solution: "1) Resolve & verify `resolved.is_relative_to(root)`, reject `_is_sensitive_path(rel_parts)`, and open via dir_fd using `DIRECTORY_LOOKUP_FLAGS` for ancestors and `DIRECTORY_READ_FLAGS` (`O_DIRECTORY | O_NOFOLLOW | O_RDONLY`) for the target directory. 2) Filter out `SEARCH_SKIP_NAMES` and `_is_sensitive_path((entry.name,))`, and do not follow symlinks. 3) Sort deterministically, cap at e.g. 200 entries / 4 KiB (`MAX_FILE_BYTES`), JSON-quote unsafe names, and append a truncation notice if capped. 4) Decorate with `@tool`, add to `DEFAULT_TOOLS`, update `SYSTEM_PROMPT`, and add boundary/symlink/sensitive-file tests in `tests/test_tools.py`."
+    solution: "1) Resolve & verify `resolved.is_relative_to(root)`, reject `_is_sensitive_path(rel_parts)`, and open via dir_fd using `DIRECTORY_LOOKUP_FLAGS` for ancestors and `DIRECTORY_READ_FLAGS` (`O_DIRECTORY | O_NOFOLLOW | O_RDONLY`) for the target directory. 2) Filter out `SEARCH_SKIP_NAMES` and `_is_sensitive_path((entry.name,))`, and do not follow symlinks. 3) Sort deterministically, cap at e.g. 200 entries / 4 KiB (`MAX_FILE_BYTES`), JSON-quote unsafe names, and append a truncation notice if capped. 4) Define and decorate the tool in its own module, then import it and add it to `DEFAULT_TOOLS` in `simple_agent/tools/__init__.py`, update `SYSTEM_PROMPT`, and add boundary/symlink/sensitive-file tests in `tests/test_tools.py`."
   },
   {
     id: "ex-4",
@@ -106,21 +106,21 @@ window.ATLAS_QUIZZES = [
     category: "Tools & Security",
     question: "Why does `_open_workspace_file()` use `O_PATH` (or `O_SEARCH`) on parent directories instead of `O_RDONLY`?",
     answer: "Traversing to a known file path only requires execute (`+x` / search) permission on ancestor directories, not read (`+r`) permission. Using `O_PATH` allows `read_file()` to open files inside `0o111` search-only ancestor directories while still keeping `O_DIRECTORY | O_NOFOLLOW` protection.",
-    ref: "simple_agent/tools.py:27-28, tests/test_tools.py:220-236"
+    ref: "simple_agent/tools/workspace_files.py:19-20, tests/test_tools.py:220-236"
   },
   {
     id: "q-5",
     category: "Tools & Security",
-    question: "Why does `read_file()` check `type(start_line) is not int` instead of `not isinstance(start_line, int)`?",
+    question: "Why does `validate_line_range()` check `type(start_line) is not int` instead of `not isinstance(start_line, int)`?",
     answer: "In Python, `bool` is a subclass of `int` (`isinstance(True, int) == True`). Checking exact `type(...) is not int` rejects boolean arguments like `start_line=True` from tool calls.",
-    ref: "simple_agent/tools.py:98"
+    ref: "simple_agent/tools/workspace_text.py:14-19"
   },
   {
     id: "q-6",
     category: "Tools & Security",
-    question: "In `search_text()`, why does `result_left` start at `MAX_SEARCH_RESULT_BYTES - len(SEARCH_INCOMPLETE.encode('utf-8'))`?",
+    question: "In `search_rows()`, why does `result_left` start at `MAX_SEARCH_RESULT_BYTES - len(SEARCH_INCOMPLETE.encode('utf-8'))`?",
     answer: "By reserving the exact byte length of the `SEARCH_INCOMPLETE` notice up front, `search_text()` guarantees that even when a search truncates at the 4 KiB output cap, appending the incomplete notice never pushes the total UTF-8 output past `MAX_SEARCH_RESULT_BYTES` (4096 bytes).",
-    ref: "simple_agent/tools.py:194, simple_agent/tools.py:239-244"
+    ref: "simple_agent/tools/workspace_text.py:51-74"
   },
   {
     id: "q-7",

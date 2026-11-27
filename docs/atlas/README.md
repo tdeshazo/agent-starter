@@ -1,7 +1,8 @@
 # Simple Agent — Interactive Codebase Atlas
 
-The diagrams, walkthroughs, and code excerpts describe the Git snapshot named
-in the page header. See the project README for the current module layout.
+The verbatim code excerpts come from the Git snapshot named in their headers.
+The tool walkthrough, extension tutorial, and exercises use the current
+`simple_agent/tools/` package. See the project README for the current application layout.
 The two atlas entry pages share the workspace tool simulator in
 `read-file-policy.js`. The simulator uses a virtual `/workspace` and supplied
 file metadata.

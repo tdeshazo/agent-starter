@@ -52,7 +52,7 @@
       <div class="code-block">
         <div class="code-header">
           <span><strong>${esc(ex.path)}</strong>:${ex.startLine}-${ex.endLine} · ${esc(ex.symbol)}</span>
-          <span>Verbatim (${lines.length} lines)</span>
+          <span>Snapshot ${esc(META.short || "unknown")} · ${lines.length} lines</span>
         </div>
         <div class="code-scroll">${rows}</div>
       </div>`;

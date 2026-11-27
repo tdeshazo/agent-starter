@@ -213,36 +213,37 @@ window.ATLAS_WALKTHROUGHS = [
       {
         title: "Step 1 — Security Constants & Sensitive Path Blocklist",
         evidence: "verified",
-        callChain: ["simple_agent/tools.py:14-37 -> _is_sensitive_path()"],
-        explanation: "tools.py defines strict caps: 4 KiB whole-file / output limit, 1 MiB candidate file limit, 20 search matches, 10,000 scanned entries, 32 MiB total read budget, and max depth 32. _is_sensitive_path() blocks any path containing '.git' as a component, '.env', or '.env.*' unless in ALLOWED_ENV_FILES (.env.example, .env.sample, .env.template).",
+        callChain: ["simple_agent/tools/workspace_files.py:24 -> _is_sensitive_path()", "simple_agent/tools/workspace_text.py:7 -> text limits"],
+        explanation: "The filesystem and text helpers enforce distinct caps: 4 KiB whole-file / output limit, 1 MiB candidate file limit, 20 search matches, 10,000 scanned entries, 32 MiB total read budget, and max depth 32. _is_sensitive_path() blocks any path containing '.git' as a component, '.env', or '.env.*' unless in ALLOWED_ENV_FILES (.env.example, .env.sample, .env.template).",
         excerptId: "tools_constants"
       },
       {
         title: "Step 2 — TOCTOU-Resistant dir_fd Traversal & FIFO Protection",
         evidence: "verified",
-        callChain: ["simple_agent/tools.py:57 -> _open_workspace_file()", "simple_agent/tools.py:40 -> _open_regular_file()"],
+        callChain: ["simple_agent/tools/workspace_files.py:49 -> _open_workspace_file()", "simple_agent/tools/workspace_files.py:32 -> _open_regular_file()"],
         explanation: "Instead of calling open(resolved_path) (vulnerable to symlink swap races and blocking on named pipes/FIFOs), _open_workspace_file() opens '.' with O_DIRECTORY|O_NOFOLLOW|O_PATH (allowing traversal through execute-only 0o111 ancestor directories!), steps component by component via dir_fd, checks lstat S_ISREG, opens with O_RDONLY|O_NONBLOCK|O_NOFOLLOW, and re-verifies S_ISREG via os.fstat(fd).",
         excerptId: "tools_fd_open"
       },
       {
         title: "Step 3 — read_file: Whole-File vs Line-Range Mode",
         evidence: "verified",
-        callChain: ["simple_agent/tools.py:84 -> read_file(path, start_line, end_line)"],
+        callChain: ["simple_agent/tools/workspace.py:19 -> read_file()", "simple_agent/tools/workspace_files.py:66 -> read_workspace_bytes()", "simple_agent/tools/workspace_text.py:22 -> select_lines()"],
         explanation: "read_file() requires both start_line and end_line or neither, and uses type(x) is int (deliberately rejecting bool since isinstance(True, int) is True!). Whole-file reads cap input at 4 KiB; ranged reads allow candidate files up to 1 MiB, slice splitlines(keepends=True)[start_line-1:end_line], and enforce that the encoded slice fits within 4 KiB.",
         excerptId: "tool_read_file"
       },
       {
         title: "Step 4 — search_text: Deterministic DFS, Budgets & UTF-8 Safe Snippets",
         evidence: "verified",
-        callChain: ["simple_agent/tools.py:142 -> search_text(query)", "simple_agent/tools.py:129 -> _snippet()"],
-        explanation: "search_text() sorts directory entries for deterministic results, skips .venv/__pycache__/node_modules and sensitive paths, skips symlinks/NUL-byte binaries/non-UTF-8 files, JSON-quotes paths containing ':', '\"', '\\\\', or nonprintable chars (preventing line-break spoofing), and slices UTF-8 snippet windows around the match while reserving space for SEARCH_INCOMPLETE whenever any budget is hit.",
+        callChain: ["simple_agent/tools/workspace.py:35 -> search_text()", "simple_agent/tools/workspace_files.py:128 -> WorkspaceScan.files()", "simple_agent/tools/workspace_text.py:51 -> search_rows()"],
+        explanation: "WorkspaceScan sorts directory entries for deterministic results, skips .venv/__pycache__/node_modules and sensitive paths, and skips symlinks. search_rows() skips NUL-byte binaries and non-UTF-8 files, JSON-quotes paths containing ':', '\"', '\\\\', or nonprintable chars (preventing line-break spoofing), and slices UTF-8 snippet windows around the match while reserving space for SEARCH_INCOMPLETE whenever any budget is hit.",
         excerptId: "tool_search_text"
       }
     ],
     breakpoints: [
-      { loc: "simple_agent/tools.py:106", watch: "root, resolved, rel_parts", why: "Verify workspace boundary check and symlink target resolution before fd traversal." },
-      { loc: "simple_agent/tools.py:61", watch: "name, parent_fd", why: "Step through each dir_fd hop during O_NOFOLLOW traversal." },
-      { loc: "simple_agent/tools.py:239", watch: "result_left, available, len(rows), read_left, entries_left", why: "Watch byte and match budgets decrement on every hit in search_text()." }
+      { loc: "simple_agent/tools/workspace_files.py:72", watch: "root, resolved, rel_parts", why: "Verify workspace boundary check and symlink target resolution before fd traversal." },
+      { loc: "simple_agent/tools/workspace_files.py:53", watch: "name, parent_fd", why: "Step through each dir_fd hop during O_NOFOLLOW traversal." },
+      { loc: "simple_agent/tools/workspace_text.py:69", watch: "result_left, available, len(rows)", why: "Inspect the output budget on each match." },
+      { loc: "simple_agent/tools/workspace_files.py:152", watch: "read_left, self._entries_left", why: "Inspect the scan budgets." }
     ],
     failures: [
       { title: "Path traversal or symlink escape", symptom: "read_file('../secret.txt') or symlink pointing outside workspace or to .env.", handling: "Blocked by resolved.is_relative_to(root) or _is_sensitive_path(), raising ValueError (surfaced to model as toolResult error).", evidence: "verified" },

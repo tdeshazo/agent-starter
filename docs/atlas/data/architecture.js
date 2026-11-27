@@ -38,7 +38,7 @@ window.ATLAS_C4 = {
         x: 660, y: 160, w: 220, h: 84,
         evidence: "verified",
         summary: "Project files inspected by read_file and search_text via TOCTOU-resistant dir_fd traversal. Excludes .git, .env, .env.* (except allowlisted examples), symlinks, and non-regular files.",
-        files: ["simple_agent/tools.py:14-255"],
+        files: ["simple_agent/tools/workspace_files.py", "simple_agent/tools/workspace_text.py"],
         excerpts: ["tools_constants", "tools_fd_open"],
         tests: ["tests/test_tools.py::ToolTests", "tests/test_tools.py::WorkspaceSearchTests"]
       },
@@ -83,11 +83,11 @@ window.ATLAS_C4 = {
         tests: ["tests/test_tui.py (25 tests)"]
       },
       {
-        id: "agent_core", kind: "container", label: "Agent & Tool Loop", tech: "agent.py · tools.py · prompts.py · Strands SDK",
+        id: "agent_core", kind: "container", label: "Agent & Tool Loop", tech: "agent.py · tools/ · prompts.py · Strands SDK",
         x: 280, y: 185, w: 230, h: 92,
         evidence: "verified",
         summary: "create_agent() binds OpenAIModel, SYSTEM_PROMPT, and DEFAULT_TOOLS into a Strands Agent. Strands owns the multi-step inference/tool-call loop and emits callback events to Transcript.",
-        files: ["simple_agent/agent.py:13-46", "simple_agent/tools.py:74-255", "simple_agent/prompts.py:3-10"],
+        files: ["simple_agent/agent.py:13-46", "simple_agent/tools/__init__.py", "simple_agent/prompts.py:3-10"],
         excerpts: ["agent_factory", "system_prompt"],
         tests: ["tests/test_settings_and_cli.py::BaseUrlTests", "tests/test_tools.py (15 tests)"]
       },
@@ -187,11 +187,11 @@ window.ATLAS_C4 = {
         tests: ["tests/test_settings_and_cli.py::BaseUrlTests"]
       },
       {
-        id: "comp_tools", kind: "component", label: "tools.py", tech: "current_time · read_file · search_text",
+        id: "comp_tools", kind: "component", label: "tools package", tech: "current_time · read_file · search_text",
         x: 740, y: 145, w: 205, h: 74,
         evidence: "verified",
         summary: "Strands @tool functions with strict workspace confinement, dir_fd O_NOFOLLOW traversal, sensitive file blocklist, and hard byte/entry/depth budgets.",
-        files: ["simple_agent/tools.py:14-255"],
+        files: ["simple_agent/tools/workspace_files.py", "simple_agent/tools/workspace_text.py"],
         excerpts: ["tools_constants", "tool_read_file", "tool_search_text"],
         tests: ["tests/test_tools.py (15 tests)"]
       },
@@ -276,11 +276,11 @@ window.ATLAS_C4 = {
         tests: ["tests/test_tui.py::AgentTuiTests::test_escape_stops_stream_and_restores_history", "tests/test_settings_and_cli.py::CliTests"]
       },
       {
-        id: "fn_open_ws", kind: "component", label: "_open_workspace_file & search_text", tech: "simple_agent/tools.py:39-255",
+        id: "fn_open_ws", kind: "component", label: "Workspace reads and search", tech: "simple_agent/tools/",
         x: 290, y: 165, w: 235, h: 94,
         evidence: "verified",
         summary: "Walks rel_parts via dir_fd + O_DIRECTORY|O_NOFOLLOW|O_PATH, verifies S_ISREG via lstat & fstat, opens with O_RDONLY|O_NONBLOCK|O_NOFOLLOW. Prevents symlink swaps & FIFO hangs.",
-        files: ["simple_agent/tools.py:39-127", "simple_agent/tools.py:142-255"],
+        files: ["simple_agent/tools/workspace.py", "simple_agent/tools/workspace_files.py", "simple_agent/tools/workspace_text.py"],
         excerpts: ["tools_fd_open", "tool_read_file"],
         tests: ["tests/test_tools.py (15 tests)"]
       }
@@ -350,7 +350,7 @@ window.ATLAS_INVENTORY = [
     category: "tools",
     priority: true,
     evidence: "verified",
-    entry: "simple_agent/tools.py:84",
+    entry: "simple_agent/tools/workspace.py:19",
     symbols: ["read_file", "_open_workspace_file", "_open_regular_file", "_is_sensitive_path"],
     summary: "Reads UTF-8 files up to 4 KiB whole or 1 MiB with inclusive start_line/end_line (output <= 4 KiB). Uses Path.resolve() confinement plus dir_fd O_DIRECTORY|O_NOFOLLOW|O_PATH traversal and O_NONBLOCK fstat S_ISREG checks.",
     walkthrough: "wt-tools",
@@ -362,7 +362,7 @@ window.ATLAS_INVENTORY = [
     category: "tools",
     priority: true,
     evidence: "verified",
-    entry: "simple_agent/tools.py:142",
+    entry: "simple_agent/tools/workspace.py:35",
     symbols: ["search_text", "_snippet", "DEFAULT_TOOLS"],
     summary: "Deterministic sorted dir_fd DFS for case-sensitive single-line literals. Enforces 10,000 entries, depth 32, 32 MiB read budget, 1 MiB/file cap, 20 matches, 4 KiB output cap, binary/NUL skip, and JSON-quoted unsafe filenames.",
     walkthrough: "wt-tools",
@@ -374,7 +374,7 @@ window.ATLAS_INVENTORY = [
     category: "tools",
     priority: false,
     evidence: "verified",
-    entry: "simple_agent/tools.py:74",
+    entry: "simple_agent/tools/clock.py:10",
     symbols: ["current_time"],
     summary: "Returns ISO-8601 timestamp via datetime.now(ZoneInfo(timezone)).isoformat(); defaults to UTC and raises ZoneInfoNotFoundError on invalid IANA zones.",
     walkthrough: "wt-tools",
