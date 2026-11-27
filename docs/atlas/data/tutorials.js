@@ -6,29 +6,30 @@ window.ATLAS_TUTORIALS = [
     id: "tut-add-tool-calculator",
     title: "Tutorial: Adding a New Tool (Safe Calculator Example)",
     badge: "TUTORIAL EXAMPLE (NOT IN APP CODE)",
-    subtitle: "Learn the exact 4-file workflow to add a new Strands @tool to simple-agent without touching agent.py, cli.py, or tui/ — using a safe, AST-whitelisted calculator as the worked example.",
+    subtitle: "Learn the workflow to add a new Strands @tool to simple-agent without touching agent.py, cli.py, or tui/ — using a safe, AST-whitelisted calculator as the worked example.",
     touchpoints: [
-      { file: "simple_agent/tools.py", change: "Edit", role: "Define @tool calculate(expression: str) -> str and append it to DEFAULT_TOOLS." },
+      { file: "simple_agent/tools/calculator.py", change: "Add", role: "Define @tool calculate(expression: str) -> str." },
+      { file: "simple_agent/tools/__init__.py", change: "Edit", role: "Import calculate and append it to DEFAULT_TOOLS." },
       { file: "simple_agent/prompts.py", change: "Edit", role: "Tell Gemma 4 when to invoke calculate in SYSTEM_PROMPT." },
       { file: "tests/test_tools.py", change: "Edit", role: "Add unit tests for arithmetic, errors, injection blocking, and exponent DoS caps." },
-      { file: "simple_agent/agent.py & tui/commands.py", change: "No change needed", role: "create_agent() loads DEFAULT_TOOLS and /tools reads agent.tool_registry dynamically." }
+      { file: "simple_agent/agent.py & tui/commands.py", change: "No change needed", role: "create_agent() loads DEFAULT_TOOLS and /tools uses the registered tool specs." }
     ],
     steps: [
       {
-        title: "Step 1 — Understand the @tool Contract in simple_agent/tools.py",
+        title: "Step 1 — Understand the @tool Contract in simple_agent/tools/clock.py",
         evidence: "verified",
         summary: "Strands inspects Python type annotations and the Google-style docstring (`Args:`) of any `@tool`-decorated function to generate the JSON Schema sent to `llama-server` (`--jinja`). Look at `current_time` below: explicit parameter types, a concise one-line summary (which `/tools` displays!), and a deterministic string return value.",
         excerptId: "tool_current_time",
         checklist: [
           "Keep parameter types simple JSON-compatible primitives (`str`, `int`, `float`, `bool`).",
-          "Write a clear first line in the docstring — `simple_agent/tui/commands.py:80` splits on `\\n` and shows line 1 in `/tools`.",
+          "Write a clear first line in the docstring — `/tools` shows that line as the summary.",
           "Return a `str` (or raise `ValueError` on invalid input so Strands surfaces a clean `toolResult` error)."
         ]
       },
       {
         title: "Step 2 — Design `calculate` with Security & Resource Budgets (Never `eval()`)",
         evidence: "static",
-        summary: "Every tool in `simple_agent/tools.py` treats model inputs as untrusted and enforces hard bounds (4 KiB output, 1 MiB file, 32 depth). A calculator must follow the same philosophy: NEVER call Python's `eval()` on LLM output! Instead, parse with `ast.parse(expression, mode='eval')` and walk an explicit whitelist of AST nodes (`Expression`, `BinOp`, `UnaryOp`, `Constant`).",
+        summary: "The workspace tools treat model inputs as untrusted and enforce hard bounds (4 KiB output, 1 MiB file, 32 depth). A calculator must follow the same philosophy: NEVER call Python's `eval()` on LLM output! Instead, parse with `ast.parse(expression, mode='eval')` and walk an explicit whitelist of AST nodes (`Expression`, `BinOp`, `UnaryOp`, `Constant`).",
         excerptId: "tools_constants",
         checklist: [
           "Cap input length (e.g., `MAX_CALC_CHARS = 256`) and AST node count (e.g., `MAX_CALC_NODES = 64`).",
@@ -41,12 +42,12 @@ window.ATLAS_TUTORIALS = [
       {
         title: "Step 3 — Register in `DEFAULT_TOOLS` (Zero Wiring Changes Needed)",
         evidence: "verified",
-        summary: "Append `calculate` to `DEFAULT_TOOLS = (current_time, read_file, search_text, calculate)` at the bottom of `simple_agent/tools.py`. Because `create_agent()` passes `tools=list(DEFAULT_TOOLS)` to `Agent(...)` and `/tools` queries `agent.tool_registry.get_all_tool_specs()`, both the agent loop and TUI `/tools` command pick it up automatically.",
+        summary: "Import `calculate` from `.calculator` in `simple_agent/tools/__init__.py` and append it to `DEFAULT_TOOLS`. Because `create_agent()` passes `tools=list(DEFAULT_TOOLS)` to `Agent(...)` and `/tools` queries `agent.tool_registry.get_all_tool_specs()`, both the agent loop and TUI `/tools` command pick it up automatically.",
         excerptId: "agent_factory",
         checklist: [
-          "Update `DEFAULT_TOOLS` in `simple_agent/tools.py:255`.",
-          "Verify `simple_agent/agent.py:43` passes `tools=list(DEFAULT_TOOLS)` unchanged.",
-          "Verify `simple_agent/tui/commands.py:74-82` lists `calculate — Evaluate a basic arithmetic expression.` automatically."
+          "Update `DEFAULT_TOOLS` in `simple_agent/tools/__init__.py`.",
+          "Verify `simple_agent/agent.py` passes `tools=list(DEFAULT_TOOLS)` unchanged.",
+          "Verify `simple_agent/tui/commands.py` lists `calculate — Evaluate a basic arithmetic expression.` automatically."
         ]
       },
       {
@@ -84,7 +85,7 @@ window.ATLAS_TUTORIALS = [
       }
     ],
     referenceCode: {
-      toolsPy: `# Example addition to simple_agent/tools.py (NOT committed to app code)
+      toolsPy: `# Example for simple_agent/tools/calculator.py (NOT committed to app code)
 import ast
 import math
 import operator

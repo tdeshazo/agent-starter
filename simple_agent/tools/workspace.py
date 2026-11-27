@@ -1,8 +1,6 @@
-"""Expose local time and bounded workspace access as Strands tools."""
+"""Expose bounded workspace access as Strands tools."""
 
 from contextlib import closing
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from strands import tool
 
@@ -15,16 +13,6 @@ from .workspace_text import (
     validate_line_range,
     validate_query,
 )
-
-
-@tool
-def current_time(timezone: str = "UTC") -> str:
-    """Return the current time in an IANA timezone, such as America/New_York.
-
-    Args:
-        timezone: IANA timezone name.
-    """
-    return datetime.now(ZoneInfo(timezone)).isoformat()
 
 
 @tool
@@ -60,6 +48,3 @@ def search_text(query: str) -> str:
     if scan.incomplete or truncated:
         rows.append(SEARCH_INCOMPLETE)
     return "\n".join(rows) if rows else "No matches."
-
-
-DEFAULT_TOOLS = (current_time, read_file, search_text)

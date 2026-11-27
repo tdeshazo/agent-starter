@@ -7,7 +7,7 @@ from pathlib import Path
 
 from simple_agent.conversation import Conversation, InvocationError, TextDelta
 from simple_agent.preferences import UserPreferences
-from simple_agent.workspace_text import search_rows, select_lines
+from simple_agent.tools.workspace_text import search_rows, select_lines
 
 
 class ConversationTests(unittest.TestCase):
@@ -71,15 +71,20 @@ class WorkspaceTextTests(unittest.TestCase):
 class ArchitectureTests(unittest.TestCase):
     def test_core_and_presentation_dependencies_point_inward(self):
         package = Path(__file__).resolve().parents[1] / "simple_agent"
-        core = {"config", "conversation", "preferences", "workspace_text"}
-        adapters = {"agent", "cli", "settings", "strands_backend", "tools", "workspace_files"}
-        files = [package / f"{name}.py" for name in sorted(core)]
+        core = {
+            package / "config.py",
+            package / "conversation.py",
+            package / "preferences.py",
+            package / "tools" / "workspace_text.py",
+        }
+        adapters = {"agent", "cli", "settings", "strands_backend", "tools"}
+        files = sorted(core)
         files.extend(sorted((package / "tui").glob("*.py")))
         for file in files:
             forbidden = adapters | {"create_agent", "strands", "openai"}
-            if file.parent == package:
+            if file in core:
                 forbidden |= {"tui", "prompt_toolkit"}
-            context = "simple_agent.tui" if file.parent.name == "tui" else "simple_agent"
+            context = ".".join(("simple_agent", *file.parent.relative_to(package).parts))
             tree = ast.parse(file.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

@@ -692,7 +692,7 @@
         <h3>Reference Implementation (Hidden by Default)</h3>
         <p class="muted">Try implementing <code>calculate</code> yourself first using the 6 steps above, then expand to compare against a <code>ruff</code>-clean reference.</p>
         <details class="disclosure">
-          <summary>1. Reference <code>calculate</code> tool for <code>simple_agent/tools.py</code></summary>
+          <summary>1. Reference <code>calculate</code> tool for <code>simple_agent/tools/calculator.py</code></summary>
           <div class="disclosure-body"><pre class="term-sim" style="min-height:auto;margin:0;">${esc(tut.referenceCode.toolsPy)}</pre></div>
         </details>
         <details class="disclosure">
@@ -893,7 +893,7 @@
           )
           .join("")}
       </div>
-      <h4><code>search_text</code> Resource Budgets (<code>workspace_files.py</code> and <code>workspace_text.py</code>)</h4>
+      <h4><code>search_text</code> Resource Budgets (<code>tools/workspace_files.py</code> and <code>tools/workspace_text.py</code>)</h4>
       <div class="kv-grid">
         <div class="kv-box"><div class="kv-label">Max Matches</div><div class="kv-val">20 rows</div></div>
         <div class="kv-box"><div class="kv-label">Max Output</div><div class="kv-val">4,096 B (reserves notice)</div></div>

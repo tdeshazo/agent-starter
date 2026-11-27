@@ -106,9 +106,11 @@ Agent setup lives in the `simple_agent` package:
 
 - `agent.py`: `create_agent()` wires the model, prompt, and tools together.
 - `prompts.py`: defines the built-in `SYSTEM_PROMPT`.
-- `tools.py`: add functions decorated with `@tool` and register them in `DEFAULT_TOOLS`.
-  Workspace filesystem access lives in `workspace_files.py`. Pure text selection
-  and search formatting live in `workspace_text.py`.
+- `simple_agent/tools/`: add a module with an `@tool`-decorated function and
+  register it in `DEFAULT_TOOLS` in the package's `__init__.py`. The built-in
+  clock tool lives in `clock.py` and the workspace tools live in `workspace.py`.
+  Within the package, `workspace_files.py` owns filesystem access and
+  `workspace_text.py` owns text selection and search formatting.
 - `conversation.py` manages turns, recovery, and reset for all three CLI modes.
   `strands_backend.py` translates model events, metadata, and failures for that interface.
 - `preferences.py` owns preference validation. `settings.py` saves the existing

@@ -1035,7 +1035,7 @@ code, pre { font-family: var(--mono); }
       <button class="lab-tab" data-lab="lab-tools" onclick="openLab('lab-tools')">
         <div class="lab-tab-num">LAB 03 · SECURITY SANDBOX</div>
         <div class="lab-tab-title">Workspace Tool Gatekeeper</div>
-        <div class="lab-tab-file">tools.py (dir_fd + O_NOFOLLOW)</div>
+        <div class="lab-tab-file">tools/workspace.py</div>
       </button>
       <button class="lab-tab" data-lab="lab-hardware" onclick="openLab('lab-hardware')">
         <div class="lab-tab-num">LAB 04 · INFERENCE RUNTIME</div>
@@ -1177,7 +1177,7 @@ code, pre { font-family: var(--mono); }
     <div id="lab-tools" class="lab-panel">
       <div class="lab-header">
         <div>
-          <h2>Lab 3: Sandboxed Workspace Tools &amp; Byte-Budget Pipeline (<code>tools.py</code>)</h2>
+          <h2>Lab 3: Sandboxed Workspace Tools &amp; Byte-Budget Pipeline (<code>tools/workspace.py</code>)</h2>
           <p>
             Simulate a <code>read_file()</code> call from <code>/workspace</code> and inspect the <code>search_text()</code> budgets.
           </p>
@@ -1245,7 +1245,7 @@ code, pre { font-family: var(--mono); }
             <div id="tool-outcome" style="font-family:var(--mono); font-size:12.5px;"></div>
           </div>
           <div class="state-box">
-            <h4><code>search_text</code> Resource Budgets (<code>workspace_files.py</code> and <code>workspace_text.py</code>)</h4>
+            <h4><code>search_text</code> Resource Budgets (<code>tools/workspace_files.py</code> and <code>tools/workspace_text.py</code>)</h4>
             <div class="kv-grid">
               <span class="kv-key">MAX_SEARCH_MATCHES</span><span class="kv-val">20 rows</span>
               <span class="kv-key">MAX_SEARCH_RESULT_BYTES</span><span class="kv-val">4,096 B (reserves 66 B for incomplete notice)</span>
