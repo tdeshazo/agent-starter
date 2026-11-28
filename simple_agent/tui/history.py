@@ -2,7 +2,7 @@
 import time
 import unicodedata
 from bisect import bisect_right
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import cache
 
 from prompt_toolkit.data_structures import Point
@@ -10,6 +10,8 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import ANSI, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType, MouseModifier
+
+from .transcript import ReasoningBlock
 
 
 def _plain(row: str) -> str:
@@ -45,15 +47,20 @@ class TranscriptControl(UIControl):
         on_wheel: Callable[[int], None] | None = None,
         focusable: Callable[[], bool] | None = None,
         on_select: Callable[[], None] | None = None,
+        on_toggle_reasoning: Callable[[int, int], None] | None = None,
     ):
-        self.rows: list[str] = []
+        self.rows: list[str | ReasoningBlock] = []
         self.tail = tail
         self.on_width_change = on_width_change
         self.on_wheel = on_wheel
         self._focusable = focusable
         self._on_select = on_select
+        self._on_toggle_reasoning = on_toggle_reasoning
         self.first_line: int | None = None
+        self.focused_reasoning: ReasoningBlock | None = None
         self._painted_rows: list[str] = []
+        self._painted_disclosures: dict[int, ReasoningBlock] = {}
+        self._pressed_reasoning: ReasoningBlock | None = None
         self._selection_rows: list[str] | None = None
         self._anchor = Point(0, 0)
         self._cursor = Point(0, 0)
@@ -72,12 +79,14 @@ class TranscriptControl(UIControl):
     def clear_selection(self) -> None:
         self._selection_rows = None
         self._selected = self._dragging = False
+        self._pressed_reasoning = None
         self._last_click = None
         self._click_count = 0
 
     def end_drag(self) -> None:
         """Handle a mouse release over another control without freezing a click."""
         self._dragging = False
+        self._pressed_reasoning = None
         if not self.has_selection:
             self.clear_selection()
 
@@ -101,6 +110,50 @@ class TranscriptControl(UIControl):
         column = max(0, min(position.x, max(len(_plain(rows[row])) - 1, 0)))
         return Point(column, row)
 
+    def _reasoning_positions(self) -> Iterator[tuple[int, ReasoningBlock]]:
+        extra = 0
+        for index, row in enumerate(self.rows):
+            if isinstance(row, ReasoningBlock):
+                yield index + extra, row
+                if row.expanded:
+                    extra += len(row.details())
+
+    def visible_count(self) -> int:
+        if self._selection_rows is not None:
+            return len(self._selection_rows)
+        return len(self.rows) + len(self.tail()) + sum(
+            len(row.details()) for row in self.rows if isinstance(row, ReasoningBlock) and row.expanded
+        )
+
+    def focus_reasoning(self, direction: int) -> int | None:
+        positions = list(self._reasoning_positions())
+        if not positions:
+            return None
+        blocks = [block for _, block in positions]
+        if self.focused_reasoning in blocks:
+            index = (blocks.index(self.focused_reasoning) + direction) % len(positions)
+        else:
+            index = 0 if direction > 0 else len(positions) - 1
+        line, self.focused_reasoning = positions[index]
+        self.clear_selection()
+        return line
+
+    def toggle_focused_reasoning(self) -> None:
+        if self.focused_reasoning is not None:
+            self._toggle_reasoning(self.focused_reasoning)
+
+    def _toggle_reasoning(self, block: ReasoningBlock) -> None:
+        line = next((line for line, item in self._reasoning_positions() if item is block), None)
+        if line is None:
+            return
+        block.expanded = not block.expanded
+        delta = len(block.details()) * (1 if block.expanded else -1)
+        self.clear_selection()
+        if self.first_line is not None and self.first_line > line:
+            self.first_line = max(line, self.first_line + delta)
+        if self._on_toggle_reasoning is not None:
+            self._on_toggle_reasoning(line, delta)
+
     def mouse_handler(self, mouse_event: MouseEvent):
         event_type = mouse_event.event_type
         if self.on_wheel is not None:
@@ -123,6 +176,9 @@ class TranscriptControl(UIControl):
             self._cursor = point
             self._selected = extending
             self._dragging = True
+            self._pressed_reasoning = None
+            if not mouse_event.modifiers and point.x >= 2:
+                self._pressed_reasoning = self._painted_disclosures.get(mouse_event.position.y)
         elif event_type == MouseEventType.MOUSE_MOVE and self._dragging:
             if mouse_event.button not in {MouseButton.LEFT, MouseButton.UNKNOWN}:
                 self._dragging = False
@@ -131,10 +187,18 @@ class TranscriptControl(UIControl):
                 return NotImplemented
             self._cursor = self._point(mouse_event.position)
             self._selected = self._cursor != self._anchor
+            if self._selected or mouse_event.position.y != self._anchor.y:
+                self._pressed_reasoning = None
         elif event_type == MouseEventType.MOUSE_UP and self._dragging:
             self._cursor = self._point(mouse_event.position)
             self._selected = self._selected or self._cursor != self._anchor
             self._dragging = False
+            block, self._pressed_reasoning = self._pressed_reasoning, None
+            if not self._selected and block is not None and mouse_event.position.y == self._anchor.y:
+                if self.is_focusable():
+                    self.focused_reasoning = block
+                self._toggle_reasoning(block)
+                return None
             if not self._selected:
                 now = time.monotonic()
                 repeated = (
@@ -171,9 +235,19 @@ class TranscriptControl(UIControl):
             self.on_width_change(width)
         rows = self._selection_rows
         if rows is None:
-            # Copy references to immutable strings so a click always sees the
-            # last paint, even if streamed rows were committed since rendering.
-            rows = self.rows + self.tail()
+            # Keep only visible strings in the snapshot used for selection.
+            # A click always sees the last paint, even as the stream updates.
+            rows = []
+            self._painted_disclosures = {}
+            for row in self.rows:
+                if isinstance(row, ReasoningBlock):
+                    self._painted_disclosures[len(rows)] = row
+                    rows.append(row.label(focused=row is self.focused_reasoning))
+                    if row.expanded:
+                        rows.extend(row.details())
+                else:
+                    rows.append(row)
+            rows.extend(self.tail())
         self._painted_rows = rows
         count = len(rows)
         if not count:
@@ -182,6 +256,8 @@ class TranscriptControl(UIControl):
 
         @cache
         def get_line(index: int):
+            if index == count:
+                return [("", " ")]
             fragments = to_formatted_text(ANSI(rows[index]))
             # Empty rows need a mapped cell for mouse coordinates. This blank
             # is display-only; the copied row remains an empty string.
@@ -215,4 +291,13 @@ class TranscriptControl(UIControl):
         else:
             row = min(self.first_line, count - 1)
             column = 0
-        return UIContent(get_line, count, cursor_position=Point(column, row), show_cursor=False)
+        content = UIContent(get_line, count, cursor_position=Point(column, row), show_cursor=False)
+        if (
+            count - 1 in self._painted_disclosures
+            and height is not None and count < height and width > 0
+            and sum(content.get_height_for_line(index, width, None) for index in range(count)) < height
+        ):
+            # Window clamps clicks below the content to its last mapped row.
+            # Map that space to a display-only blank if a disclosure ends the transcript.
+            content.line_count += 1
+        return content

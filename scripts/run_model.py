@@ -18,8 +18,8 @@ from simple_agent.config import MODEL_HOST, MODEL_ID, model_port  # noqa: E402
 def model_command(env, profile="default"):
     intel_profile = profile != "default"
     cpu_only = profile == "uhd620-cpu"
-    root = Path(env.get("DICTATION_ROOT", "~/Workspace/dictation")).expanduser()
-    default_binary = root / ".local/runtime/llama-b12246/llama-server"
+    root = Path(__file__).resolve().parents[1]
+    default_binary = root / ".local/runtime/llama-server"
     model_size = "E2B" if intel_profile else "E4B"
     default_model = root / f".local/models/gemma-4-{model_size}-it-Q4_0.gguf"
     binary = Path(env.get("AGENT_LLAMA_BIN", default_binary)).expanduser()
@@ -34,8 +34,9 @@ def model_command(env, profile="default"):
         "--flash-attn", env.get("AGENT_FLASH_ATTENTION", "auto" if intel_profile else "on"),
         "--cache-type-k", cache_type, "--cache-type-v", cache_type,
         "-t", env.get("AGENT_THREADS", "4"), "-np", "1",
-        "--no-context-shift", "--no-webui", "--jinja", "--reasoning", "off",
-        "--chat-template-kwargs", '{"enable_thinking":false}', "--log-disable",
+        "--no-context-shift", "--no-webui", "--jinja",
+        # Requests can override the thinking default via chat_template_kwargs.
+        "--reasoning", "off", "--reasoning-format", "deepseek", "--log-disable",
     ]
     if cpu_only:
         command.extend(["--device", "none"])
@@ -62,11 +63,10 @@ def main():
             print("GGML_VK_PREFER_HOST_MEMORY=" + shlex.quote(env["GGML_VK_PREFER_HOST_MEMORY"]))
         print(shlex.join(command))
         return
-    for path in (command[0], command[2]):
-        if not Path(path).is_file():
-            parser.error(
-                f"Missing {path}; set AGENT_LLAMA_BIN / AGENT_MODEL or provision dictation assets."
-            )
+    if not Path(command[0]).is_file() or not os.access(command[0], os.X_OK):
+        parser.error(f"Missing executable {command[0]}. See README or set AGENT_LLAMA_BIN.")
+    if not Path(command[2]).is_file():
+        parser.error(f"Missing model {command[2]}. Download the GGUF or set AGENT_MODEL. See README.")
     if args.profile != "uhd620-cpu":
         result = subprocess.run(
             [command[0], "--list-devices"], env=env, capture_output=True, text=True, timeout=30,

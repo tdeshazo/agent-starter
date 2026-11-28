@@ -14,6 +14,7 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType,
 from prompt_toolkit.output.vt100 import Vt100_Output
 
 from simple_agent.agent import create_conversation
+from simple_agent.conversation import TextDelta
 from simple_agent.settings import open_preferences
 from simple_agent.tui.app import AgentTui
 from simple_agent.tui.history import TranscriptControl
@@ -73,6 +74,23 @@ def sgr_drag(terminal, start, end):
         f"\x1b[<32;{end[0]};{end[1]}M"
         f"\x1b[<0;{end[0]};{end[1]}m".encode()
     )
+
+
+def sgr_click(terminal, position):
+    x, y = position
+    terminal.send_bytes(f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m".encode())
+
+
+def rendered_history(tui):
+    content = tui._history_window.render_info.ui_content
+    return [fragment_list_to_text(content.get_line(row)) for row in range(content.line_count)]
+
+
+def screen_row(tui, text):
+    info = tui._history_window.render_info
+    line = rendered_history(tui).index(text)
+    y = next(y for y, (row, _) in info.visible_line_to_row_col.items() if row == line)
+    return y + info._y_offset + 1
 
 
 class TranscriptSelectionTests(unittest.TestCase):
@@ -170,6 +188,57 @@ class TranscriptSelectionTests(unittest.TestCase):
 
 
 class SelectionIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reasoning_mouse_toggle_and_visible_only_copy_while_streaming(self):
+        more = asyncio.Event()
+
+        async def invoke(_prompt):
+            tui.transcript(TextDelta("First thought", reasoning=True))
+            await more.wait()
+            tui.transcript(TextDelta(" continues", reasoning=True))
+            await asyncio.Future()
+
+        copied = mock.AsyncMock(return_value="Copied selection.")
+        collapsed = "  ▸ Reasoning"
+        expanded = "  ▾ Reasoning"
+        with mock.patch("simple_agent.tui.app.copy_text", copied):
+            async with running_tui([], columns=50, invoke=invoke) as (tui, terminal):
+                terminal.send_text("Take a look\r")
+                await wait_until(lambda: collapsed in rendered_history(tui))
+                start = (1, screen_row(tui, "› Take a look"))
+                label_row = screen_row(tui, collapsed)
+
+                # Blank space below the last row must not activate that row's disclosure.
+                sgr_click(terminal, (4, label_row + 3))
+                sgr_drag(terminal, start, (30, label_row))
+                await wait_until(lambda: tui._history.has_selection)
+                terminal.send_bytes(b"\x03")
+                await wait_until(lambda: copied.await_count == 1)
+                self.assertEqual(copied.call_args.args[0], "› Take a look\n  ▸ Reasoning")
+
+                sgr_click(terminal, (4, label_row))
+                await wait_until(lambda: "  │ First thought" in rendered_history(tui))
+                self.assertTrue(tui.app.layout.has_focus(tui._composer))
+                self.assertFalse(tui._history.has_selection)
+                more.set()
+                detail = "  │ First thought continues"
+                await wait_until(lambda: detail in rendered_history(tui))
+                # Starting a drag on the disclosure selects it and its visible details.
+                sgr_drag(terminal, (3, screen_row(tui, expanded)), (49, screen_row(tui, detail)))
+                await wait_until(lambda: tui._history.has_selection)
+                terminal.send_bytes(b"\x03")
+                await wait_until(lambda: copied.await_count == 2)
+                self.assertEqual(copied.call_args.args[0], "▾ Reasoning\n  │ First thought continues")
+
+                sgr_click(terminal, (4, screen_row(tui, expanded)))
+                await wait_until(lambda: collapsed in rendered_history(tui))
+                self.assertNotIn(detail, rendered_history(tui))
+                self.assertFalse(tui._history.has_selection)
+                terminal.send_bytes(b"\x03")
+                await wait_until(lambda: "Response stopped" in "\n".join(rendered_history(tui)))
+                self.assertFalse(tui.running)
+                sgr_click(terminal, (4, screen_row(tui, collapsed)))
+                await wait_until(lambda: detail in rendered_history(tui))
+
     async def test_real_mouse_mapping_handles_wide_empty_and_soft_wrapped_rows(self):
         rows = ["ab界cd", "", "0123456789ABCDEFGHIJKLMN", "tail終"]
         async with running_tui(rows) as (tui, terminal):

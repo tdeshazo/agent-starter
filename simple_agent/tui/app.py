@@ -33,13 +33,13 @@ from prompt_toolkit.styles import Style
 from ..conversation import Conversation, InvocationError
 from ..preferences import PET_NAMES, UserPreferences
 from .clipboard import copy_text
-from .commands import COMMANDS, command_output, matching_commands, parse_slash_command
+from .commands import COMMANDS, command_output, matching_commands, parse_slash_command, reasoning_command
 from .history import TranscriptControl
 from .pets import PETS, pet_rows, pet_width
 from .rendering import BOLD, BOLD_CYAN, DIM, format_elapsed, format_tokens, sgr, shimmer
 from .session import header_context, session_info
 from .terminal import use_color
-from .transcript import Transcript
+from .transcript import ReasoningBlock, Transcript
 
 PLACEHOLDER = "Ask the agent anything"
 ESCAPE_TIMEOUT = 0.1
@@ -118,6 +118,7 @@ class AgentTui:
         self._scroll_remainder = 0.0
         self._header_len = 0
         self._header_width = 0
+        self._reasoning_anchor: int | None = None
         self._in_pager = False
         self._pet_picker_index: int | None = None
         self._editing_settings = False
@@ -127,13 +128,16 @@ class AgentTui:
         self._pending_copy: str | None = None
         self._name_buffer = Buffer(multiline=False)
         self._system_prompt_buffer = Buffer(multiline=True)
-        self.transcript = Transcript(self._emit, self._width, self.color)
+        self.transcript = Transcript(
+            self._emit, self._width, self.color, disclose_reasoning=self._insert_reasoning,
+        )
         self._history = TranscriptControl(
             lambda: self.transcript.tail(separate_stream=True),
             on_width_change=self._sync_width,
             on_wheel=self._scroll_wheel,
             focusable=lambda: self._in_pager,
             on_select=self._selection_changed,
+            on_toggle_reasoning=self._reasoning_toggled,
         )
         self._history_window = Window(self._history, height=Dimension(min=1), wrap_lines=True)
         self.conversation.observe(self.transcript)
@@ -177,6 +181,11 @@ class AgentTui:
 
     def _emit(self, lines: list[str]) -> None:
         self._history.rows.extend(lines)
+        self.app.invalidate()
+
+    def _insert_reasoning(self, block: ReasoningBlock) -> None:
+        anchor = self._reasoning_anchor if self._reasoning_anchor is not None else len(self._history.rows)
+        self._history.rows.insert(anchor, block)
         self.app.invalidate()
 
     # Selection and clipboard
@@ -254,6 +263,7 @@ class AgentTui:
         if not self._in_pager:
             return
         self._in_pager = False
+        self._history.focused_reasoning = None
         self._clear_selection()
         self.app.layout.focus(self._composer)
         self.app.invalidate()
@@ -263,6 +273,32 @@ class AgentTui:
             self._close_pager()
         else:
             self._open_pager()
+
+    def _focus_reasoning(self, direction: int) -> None:
+        line = self._history.focus_reasoning(direction)
+        if line is None:
+            return
+        info = self._history_window.render_info
+        if info is None or line not in info.displayed_lines:
+            self._history.first_line = line
+            self._history_window.vertical_scroll = line
+        self._selection_changed()
+        self.app.invalidate()
+
+    def _reasoning_toggled(self, line: int, delta: int) -> None:
+        info = self._history_window.render_info
+        if (
+            self._history.first_line is None
+            and info is not None
+            and delta > 0
+            and line < info.content_height + delta - info.window_height
+        ):
+            # Keep the disclosure on screen if expanded rows would push it above the live view.
+            self._history.first_line = info.first_visible_line()
+        if self._history.first_line is not None:
+            self._history_window.vertical_scroll = self._history.first_line
+        self._selection_changed()
+        self.app.invalidate()
 
     # Pet selection
 
@@ -334,6 +370,8 @@ class AgentTui:
             target_width, pet=self.pet, **session_info(self.conversation.details(), self._header_context),
         )
         self._history.rows[: self._header_len] = rows
+        if self._reasoning_anchor is not None:
+            self._reasoning_anchor += len(rows) - self._header_len
         self._header_len = len(rows)
         self._header_width = target_width
         if invalidate:
@@ -466,7 +504,7 @@ class AgentTui:
         )
 
     def _pager_status(self) -> str:
-        total = len(self._history.rows) + len(self.transcript.tail(separate_stream=True))
+        total = self._history.visible_count()
         if not total:
             label = "Empty"
         elif self._history.first_line is None:
@@ -544,7 +582,10 @@ class AgentTui:
         if self._has_selection():
             hints = ["⌃C / Ctrl-Insert copy", "esc clear selection"]
         elif self._in_pager:
-            hints = ["drag select", "↑/↓ scroll", "PgUp/PgDn page", "Home/End jump", "q/esc back"]
+            if any(isinstance(row, ReasoningBlock) for row in self._history.rows):
+                hints = ["Tab/Shift+Tab focus", "⏎ toggle", "↑/↓ scroll", "PgUp/PgDn page", "q/esc back"]
+            else:
+                hints = ["drag select", "↑/↓ scroll", "PgUp/PgDn page", "Home/End jump", "q/esc back"]
         elif self._editing_settings:
             hints = ["tab switch field", "⌃S save", "esc cancel"]
         elif self._pet_picker_index is not None:
@@ -683,9 +724,23 @@ class AgentTui:
         @bindings.add("j", filter=in_pager)
         @bindings.add("c-n", filter=in_pager)
         @bindings.add("c-e", filter=in_pager)
-        @bindings.add("enter", filter=in_pager)
         def pager_down(event):
             self._scroll_lines(1)
+
+        @bindings.add("tab", filter=in_pager)
+        def pager_focus_next(event):
+            self._focus_reasoning(1)
+
+        @bindings.add("s-tab", filter=in_pager)
+        def pager_focus_previous(event):
+            self._focus_reasoning(-1)
+
+        @bindings.add("enter", filter=in_pager)
+        def pager_enter(event):
+            if self._history.focused_reasoning is None:
+                self._scroll_lines(1)
+            else:
+                self._history.toggle_focused_reasoning()
 
         @bindings.add("b", filter=in_pager)
         def pager_page_up(event):
@@ -842,8 +897,11 @@ class AgentTui:
                     self.transcript.error(str(error))
                     return
                 del self._history.rows[self._header_len :]
+                self._history.focused_reasoning = None
                 self._refresh_header()
                 self.transcript.info("Started a new conversation.")
+            elif cmd.name == "/reasoning":
+                self.transcript.info(reasoning_command(cmd, self.conversation))
             elif cmd.name == "/settings":
                 self._open_settings()
             elif cmd.name == "/pet":
@@ -855,6 +913,7 @@ class AgentTui:
                 self.transcript.info(result)
             return
         self.transcript.user(entered)
+        self._reasoning_anchor = len(self._history.rows)
         self.turn_started = time.monotonic()
         self.stop_requested = False
         self.task = self.app.create_background_task(self._respond(prompt))
@@ -877,6 +936,7 @@ class AgentTui:
             self.transcript.error(str(error))
         finally:
             self.transcript.end_turn(time.monotonic() - self.turn_started, stopped)
+            self._reasoning_anchor = None
             self.app.invalidate()
 
     async def _animate(self) -> None:

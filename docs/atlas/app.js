@@ -640,7 +640,7 @@
               .map(
                 (tp) => `
               <tr>
-                <td><span class="file-ref">${esc(tp.file)}</span></td>
+                <td><a class="file-ref" href="../../${esc(tp.file)}">${esc(tp.file)}</a></td>
                 <td><span class="badge ${tp.change === "Edit" ? "badge-priority" : "badge-verified"}">${esc(tp.change)}</span></td>
                 <td>${esc(tp.role)}</td>
               </tr>`
@@ -665,13 +665,11 @@
         <ul style="margin:4px 0 12px 18px;padding:0;font-size:13px;">
           ${step.checklist.map((item) => `<li>${esc(item)}</li>`).join("")}
         </ul>
-        <h4>Existing Codebase Reference (Verbatim)</h4>
-        ${renderExcerpt(step.excerptId)}
       </div>
 
       <div class="wt-card" style="margin-bottom:14px;">
-        <h3>Interactive Sandbox — Test the Safe Calculator AST &amp; DoS Guards</h3>
-        <p class="muted">Try valid arithmetic and hostile LLM inputs to see how the AST whitelist and resource limits protect the process (no <code>eval()</code>).</p>
+        <h3>Arithmetic sandbox</h3>
+        <p class="muted">This browser simulation illustrates operator and input limits. Run the Python tests above to check the example’s exact behavior.</p>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
           ${presets.map((p) => `<button class="btn btn-sm" data-tut-preset="${esc(p)}"><code>${esc(p)}</code></button>`).join("")}
         </div>
@@ -688,22 +686,6 @@
         </div>
       </div>
 
-      <div class="wt-card">
-        <h3>Reference Implementation (Hidden by Default)</h3>
-        <p class="muted">Try implementing <code>calculate</code> yourself first using the 6 steps above, then expand to compare against a <code>ruff</code>-clean reference.</p>
-        <details class="disclosure">
-          <summary>1. Reference <code>calculate</code> tool for <code>simple_agent/tools/calculator.py</code></summary>
-          <div class="disclosure-body"><pre class="term-sim" style="min-height:auto;margin:0;">${esc(tut.referenceCode.toolsPy)}</pre></div>
-        </details>
-        <details class="disclosure">
-          <summary>2. Reference <code>SYSTEM_PROMPT</code> update for <code>simple_agent/prompts.py</code></summary>
-          <div class="disclosure-body"><pre class="term-sim" style="min-height:auto;margin:0;">${esc(tut.referenceCode.promptsPy)}</pre></div>
-        </details>
-        <details class="disclosure">
-          <summary>3. Reference unit tests for <code>tests/test_tools.py</code></summary>
-          <div class="disclosure-body"><pre class="term-sim" style="min-height:auto;margin:0;">${esc(tut.referenceCode.testsPy)}</pre></div>
-        </details>
-      </div>
     `;
 
     host.querySelectorAll("[data-tut-step]").forEach((btn) => {

@@ -1196,7 +1196,7 @@ code, pre { font-family: var(--mono); }
           <span class="chip" onclick="applyToolPreset('env_secret')">.env.local (Sensitive Blocked)</span>
           <span class="chip" onclick="applyToolPreset('env_example')">.env.example (Allowed Template)</span>
           <span class="chip" onclick="applyToolPreset('git')">.git/config (Blocked .git)</span>
-          <span class="chip" onclick="applyToolPreset('outside')">../dictation/secret.txt (Outside CWD)</span>
+          <span class="chip" onclick="applyToolPreset('outside')">../outside/secret.txt (Outside CWD)</span>
           <span class="chip" onclick="applyToolPreset('symlink')">escape_link.txt (Symlink Outside Workspace)</span>
           <span class="chip" onclick="applyToolPreset('fifo')">pipe.fifo (FIFO Special File)</span>
         </div>
@@ -2503,7 +2503,7 @@ const ATLAS = {
         }
       ],
       "invariants": [
-        "Port 8088 avoids colliding with sibling dictation server on port 8087.",
+        "The server listens on loopback port 8088 by default.",
         "Always aliases served weights as `gemma-4-e4b` even when Intel UHD 620 profiles load E2B GGUF weights.",
         "`uhd620-cpu` pops `LLAMA_ARG_DEVICE` from env because llama.cpp validates env devices before CLI `--device none`.",
         "Never silently falls back from Vulkan to CPU: default & uhd620-vulkan require `Vulkan\\d+:` in `--list-devices`."
@@ -3170,13 +3170,13 @@ const C4_LEVELS = {
         ]
       },
       {
-        id: "ext-dictation", kind: "external", x: 760, y: 155, w: 250, h: 118,
-        name: "Dictation Asset Store", tech: "External System · ~/Workspace/dictation",
+        id: "local-model-assets", kind: "external", x: 760, y: 155, w: 250, h: 118,
+        name: "Local Inference Assets", tech: "Local files · .local/",
         desc: "Pre-provisioned local store providing the `llama-server` binary (b12246) and quantized Gemma 4 GGUF weights.",
         files: ["scripts/run_model.py"],
         lab: "lab-hardware",
         details: [
-          "Supplies `.local/runtime/llama-b12246/llama-server`.",
+          "Supplies `.local/runtime/llama-server`.",
           "Supplies `gemma-4-E4B-it-Q4_0.gguf` (default) or `gemma-4-E2B-it-Q4_0.gguf` (UHD 620).",
           "Assets are never downloaded or mutated on startup."
         ]
@@ -3206,7 +3206,7 @@ const C4_LEVELS = {
       { from: "actor-dev", to: "sys-agent", label: "Prompts, /commands & CLI flags [TTY / stdio]" },
       { from: "sys-agent", to: "ext-workspace", label: "Sandboxed search & reads [dir_fd + O_NOFOLLOW]" },
       { from: "sys-agent", to: "ext-config", label: "Reads & atomically writes settings.json" },
-      { from: "sys-agent", to: "ext-dictation", label: "Loads binary & GGUF weights [read-only]" },
+      { from: "sys-agent", to: "local-model-assets", label: "Loads binary & GGUF weights [read-only]" },
       { from: "sys-agent", to: "ext-vulkan", label: "Offloads layers & KV cache [Vulkan / CPU]" },
       { from: "sys-agent", to: "ext-tz", label: "Queries timestamp [zoneinfo]" }
     ]
@@ -3262,7 +3262,7 @@ const C4_LEVELS = {
         files: ["scripts/run_model.py", "simple_agent/agent.py"],
         lab: "lab-hardware",
         details: [
-          "Listens on `127.0.0.1:8088` (isolated from dictation's port `8087`).",
+          "Listens on `127.0.0.1:8088`.",
           "Exposes `/v1/chat/completions` under `--alias gemma-4-e4b` and `/health`.",
           "Prompt caching enabled (`cache_prompt: true`), context shift disabled."
         ]
@@ -3287,10 +3287,10 @@ const C4_LEVELS = {
       },
       {
         id: "l2-assets", kind: "external", x: 848, y: 205, w: 195, h: 115,
-        name: "Dictation Assets", tech: "External · GGUF + Binary",
+        name: "Local Inference Assets", tech: "External · GGUF + Binary",
         desc: "Pre-built `llama-server` and quantized Gemma 4 `.gguf` weights.",
         files: ["scripts/run_model.py"],
-        details: ["Overridable via `DICTATION_ROOT`, `AGENT_LLAMA_BIN`, `AGENT_MODEL`."]
+        details: ["Overridable via `AGENT_LLAMA_BIN`, `AGENT_MODEL`."]
       },
       {
         id: "l2-gpu", kind: "external", x: 848, y: 405, w: 195, h: 115,
@@ -4537,7 +4537,7 @@ function applyToolPreset(kind) {
     env_secret: { path: ".env.local", s: "", e: "", size: "1800", ftype: "regular" },
     env_example: { path: ".env.example", s: "", e: "", size: "1800", ftype: "regular" },
     git: { path: ".git/config", s: "", e: "", size: "1800", ftype: "regular" },
-    outside: { path: "../dictation/secret.txt", s: "", e: "", size: "1800", ftype: "regular" },
+    outside: { path: "../outside/secret.txt", s: "", e: "", size: "1800", ftype: "regular" },
     symlink: { path: "escape_link.txt", s: "", e: "", size: "1800", ftype: "symlink_outside" },
     fifo: { path: "pipe.fifo", s: "", e: "", size: "1800", ftype: "fifo" },
   };
@@ -4600,8 +4600,8 @@ function renderHardwareSim() {
   const effFlash = intel ? "auto" : "on";
 
   const tokens = [
-    { t: `~/Workspace/dictation/.local/runtime/llama-b12246/llama-server`, cls: "" },
-    { t: `-m ~/Workspace/dictation/.local/models/gemma-4-${modelSize}-it-Q4_0.gguf`, cls: intel ? "profile" : "" },
+    { t: `.local/runtime/llama-server`, cls: "" },
+    { t: `-m .local/models/gemma-4-${modelSize}-it-Q4_0.gguf`, cls: intel ? "profile" : "" },
     { t: `--alias gemma-4-e4b`, cls: "" },
     { t: `--host 127.0.0.1`, cls: "" },
     { t: `--port ${effPort}`, cls: port ? "override" : "" },
@@ -4633,7 +4633,7 @@ function renderHardwareSim() {
   } else if (intel) {
     noteHtml = `<strong>API Alias Invariant:</strong> Although Intel UHD 620 loads the smaller <strong>Gemma 4 E2B</strong> GGUF, it still passes <code>--alias gemma-4-e4b</code> so <code>simple_agent/agent.py</code> works without changing <code>model_id</code>.`;
   } else {
-    noteHtml = `<strong>Default Vulkan Profile:</strong> Offloads all 99 layers with <code>q8_0</code> KV cache, <code>GGML_VK_PREFER_HOST_MEMORY=1</code>, and 8192 context tokens—matching sibling project <code>dictation</code> configuration F on dedicated port 8088.`;
+    noteHtml = `<strong>Default Vulkan Profile:</strong> Offloads all 99 layers with <code>q8_0</code> KV cache, <code>GGML_VK_PREFER_HOST_MEMORY=1</code>, and 8192 context tokens on port 8088.`;
   }
   document.getElementById("hw-notes").innerHTML = noteHtml;
 

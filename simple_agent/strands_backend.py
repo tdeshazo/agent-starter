@@ -6,6 +6,7 @@ from copy import deepcopy
 from urllib.parse import urlsplit
 
 from strands.models.openai import OpenAIModel
+from strands.types.content import Messages
 
 from .conversation import (
     ConversationEvent,
@@ -26,6 +27,25 @@ _USAGE_FIELDS = (
     ("cacheReadInputTokens", "cache_read"),
     ("outputTokens", "output"),
 )
+
+
+class LocalOpenAIModel(OpenAIModel):
+    @classmethod
+    def format_request_messages(
+        cls,
+        messages: Messages,
+        system_prompt: str | None = None,
+        **kwargs,
+    ) -> list[dict]:
+        # Chat Completions omits past reasoning. Keep it in the agent's history.
+        request_messages: Messages = [
+            {
+                **message,
+                "content": [block for block in message["content"] if "reasoningContent" not in block],
+            }
+            for message in messages
+        ]
+        return super().format_request_messages(request_messages, system_prompt, **kwargs)
 
 
 def invocation_error(error: Exception) -> InvocationError:
@@ -103,6 +123,18 @@ class StrandsBackend:
 
     def apply(self, preferences: AgentPreferences) -> None:
         apply_preferences(self._agent, preferences)
+
+    def set_reasoning(self, enabled: bool) -> None:
+        model = getattr(self._agent, "model", None)
+        if not isinstance(model, OpenAIModel):
+            return
+        params = dict(model.get_config().get("params") or {})
+        extra_body = dict(params.get("extra_body") or {})
+        template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        template_kwargs["enable_thinking"] = enabled
+        extra_body["chat_template_kwargs"] = template_kwargs
+        params["extra_body"] = extra_body
+        model.update_config(params=params)
 
     def observe(self, emit: Callable[[ConversationEvent], None]) -> None:
         self._agent.callback_handler = strands_callback(emit)

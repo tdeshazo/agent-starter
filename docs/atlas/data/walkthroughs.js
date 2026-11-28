@@ -419,7 +419,7 @@ window.ATLAS_WALKTHROUGHS = [
     evidence: "verified",
     dataFlow: [
       "CLI --profile (default | uhd620-cpu | uhd620-vulkan) + --dry-run",
-      "Environment overrides (DICTATION_ROOT, AGENT_LLAMA_BIN, AGENT_MODEL, AGENT_PORT, ...)",
+      "Environment overrides (AGENT_LLAMA_BIN, AGENT_MODEL, AGENT_PORT, ...)",
       "model_command(env, profile) -> argv list",
       "Asset existence check + Vulkan --list-devices probe (except uhd620-cpu)",
       "os.execve(binary, command, env) -> replaces Python process with llama-server"
@@ -470,7 +470,7 @@ window.ATLAS_WALKTHROUGHS = [
       { loc: "scripts/run_model.py:52", watch: "args.profile, command, env.get('GGML_VK_PREFER_HOST_MEMORY')", why: "Inspect exact launch flags before dry-run print or execve." }
     ],
     failures: [
-      { title: "Missing llama-server binary or GGUF weights", symptom: "Path(path).is_file() returns False.", handling: "parser.error() exits with instructions to set AGENT_LLAMA_BIN / AGENT_MODEL or provision dictation assets. Never downloads weights automatically.", evidence: "verified" },
+      { title: "Missing llama-server binary or GGUF weights", symptom: "Path(path).is_file() returns False.", handling: "parser.error() exits with instructions to set AGENT_LLAMA_BIN / AGENT_MODEL or install the runtime and model in the checkout’s .local directory. Never downloads weights automatically.", evidence: "verified" },
       { title: "No Vulkan device detected", symptom: "--list-devices returns non-zero or lacks 'VulkanN:'.", handling: "parser.error('No Vulkan device detected. Check Vulkan drivers and /dev/dri access.') — no silent CPU fallback.", evidence: "verified" }
     ],
     tests: [

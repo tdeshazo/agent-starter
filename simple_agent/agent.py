@@ -1,15 +1,14 @@
 """Wire the local model, system prompt, and application tools together."""
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from strands import Agent
-from strands.models.openai import OpenAIModel
 
 from .config import MODEL_HOST, MODEL_ID, model_port
 from .conversation import Conversation
 from .preferences import DEFAULT_AGENT_NAME, UserPreferences
 from .prompts import SYSTEM_PROMPT
-from .strands_backend import StrandsBackend, invocation_error
+from .strands_backend import LocalOpenAIModel, StrandsBackend, invocation_error
 from .tools import DEFAULT_TOOLS
 
 
@@ -21,9 +20,13 @@ def resolve_base_url(env: Mapping[str, str] | None = None) -> str:
     return f"http://{MODEL_HOST}:{model_port(source)}/v1"
 
 
-def create_agent() -> Agent:
-    """Create a fresh agent with its own conversation history."""
-    model = OpenAIModel(
+def create_agent(
+    *,
+    system_prompt: str | None = SYSTEM_PROMPT,
+    tools: Iterable[object] = DEFAULT_TOOLS,
+) -> Agent:
+    """Create a fresh local agent. Pass an empty iterable to register no tools."""
+    model = LocalOpenAIModel(
         client_args={
             "base_url": resolve_base_url(),
             "api_key": "local",
@@ -42,9 +45,9 @@ def create_agent() -> Agent:
     )
     return Agent(
         model=model,
-        tools=list(DEFAULT_TOOLS),
+        tools=list(tools),
         name=DEFAULT_AGENT_NAME,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
     )
 
 

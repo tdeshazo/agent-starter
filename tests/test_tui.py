@@ -42,6 +42,7 @@ from simple_agent.tui.rendering import (
     BOLD_RED_LIGHT,
     CYAN,
     DIM,
+    ITALIC_DIM,
     USER_TEXT,
     USER_TEXT_LIGHT,
     session_box,
@@ -222,6 +223,36 @@ class PlainModePetTests(unittest.TestCase):
             self.assertEqual(load_pet(config), "axolotl")
 
 
+class PlainModeReasoningTests(unittest.TestCase):
+    def test_prints_reasoning_without_folding_and_handles_the_session_command(self):
+        output = io.StringIO()
+        invoked = []
+        streamed = []
+
+        class StubAgent:
+            messages = []
+
+            def __call__(self, prompt):
+                invoked.append(prompt)
+                self.callback_handler(reasoningText="One line\nNext")
+                streamed.append(output.getvalue())
+                self.callback_handler(reasoningText=" thought")
+                self.callback_handler(data="The answer")
+
+        commands = iter(["/reasoning", "/reasoning on", "/reasoning invalid", "Question", "/exit"])
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(output):
+            run_plain(StubAgent, read=lambda: next(commands), config_path=Path(tmp) / "settings.json")
+
+        rendered = output.getvalue()
+        self.assertEqual(invoked, ["Question"])
+        self.assertIn("Reasoning is off.", rendered)
+        self.assertIn("Reasoning is on.", rendered)
+        self.assertIn("Usage: /reasoning [on|off]", rendered)
+        self.assertIn("  Reasoning\n  │ One line\n", streamed[0])
+        self.assertIn("  │ Next thought\n\n• The answer", rendered)
+        self.assertNotIn("▸ Reasoning", rendered)
+
+
 class PackageMetadataTests(unittest.TestCase):
     def test_session_info_reports_installed_package_version(self):
         info = session_info(StrandsBackend(SimpleNamespace(messages=[])).details())
@@ -231,6 +262,23 @@ class PackageMetadataTests(unittest.TestCase):
 
 
 class TranscriptTests(unittest.TestCase):
+    def test_reasoning_styles_and_wraps_inside_the_gutter(self):
+        rows, blocks = [], []
+        transcript = Transcript(rows.extend, lambda: 17, color=True, disclose_reasoning=blocks.append)
+        transcript(TextDelta("First line wraps\n\nNext thought", reasoning=True))
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(rows, [])
+
+        styled = blocks[0].details()
+        self.assertEqual(
+            [fragment_list_to_text(to_formatted_text(ANSI(row))) for row in styled],
+            ["  │ First line", "  │ wraps", "  │", "  │ Next thought"],
+        )
+        self.assertIn(f"\x1b[{ITALIC_DIM}m", styled[0])
+        self.assertIn(f"\x1b[{DIM}m│", styled[0])
+        transcript.end_turn(0, stopped=True)
+        self.assertEqual(blocks[0].details(), styled)
+
     def test_wraps_streamed_words_and_indents_explicit_lines(self):
         rows = []
         transcript = Transcript(rows.extend, lambda: 15, color=False)
@@ -559,6 +607,104 @@ class TranscriptTests(unittest.TestCase):
 
 
 class AgentTuiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pager_focus_and_disclosure_are_independent_per_prompt(self):
+        async def invoke(prompt):
+            if prompt == "First prompt":
+                agent.callback_handler(data="".join(f"Answer row {i:02d}\n" for i in range(20)))
+                agent.callback_handler(reasoningText="First step")
+                agent.callback_handler(message={"content": [{"toolUse": {
+                    "toolUseId": "time", "name": "current_time", "input": {},
+                }}]})
+                agent.callback_handler(message={"content": [{"toolResult": {
+                    "toolUseId": "time", "status": "success", "content": [{"text": "12:00"}],
+                }}]})
+                agent.callback_handler(reasoningText="Second step")
+                agent.callback_handler(data="First answer")
+            elif prompt == "Second prompt":
+                agent.callback_handler(reasoningText="Next prompt's thinking")
+                agent.callback_handler(data="Second answer")
+            else:
+                agent.callback_handler(data="Answer without reasoning")
+
+        def lines():
+            content = tui._history_window.render_info.ui_content
+            return [fragment_list_to_text(content.get_line(row)) for row in range(content.line_count)]
+
+        def visible():
+            rendered = lines()
+            return [rendered[i] for i in tui._history_window.render_info.displayed_lines]
+
+        async def wait_until(predicate):
+            async with asyncio.timeout(2):
+                while not predicate():
+                    await asyncio.sleep(0.01)
+
+        agent = SimpleNamespace(messages=[], invoke_async=invoke)
+        output = Vt100_Output(io.StringIO(), lambda: Size(rows=12, columns=80))
+        with tempfile.TemporaryDirectory() as tmp, create_pipe_input() as terminal:
+            tui = build_tui(
+                lambda: agent, input=terminal, output=output,
+                color=False, config_path=Path(tmp) / "settings.json",
+            )
+            app = asyncio.create_task(tui.run_async())
+            try:
+                await wait_until(lambda: tui._history_window.render_info is not None)
+                terminal.send_text("/reasoning o\t\r")
+                await wait_until(lambda: "Reasoning is on." in "\n".join(lines()))
+                self.assertTrue(tui.conversation.reasoning_enabled)
+
+                for prompt, answer in [
+                    ("First prompt", "• First answer"),
+                    ("Second prompt", "• Second answer"),
+                    ("Third prompt", "• Answer without reasoning"),
+                ]:
+                    terminal.send_text(prompt + "\r")
+                    await wait_until(lambda expected=answer: expected in lines() and not tui.running)
+
+                initial = lines()
+                collapsed = "  ▸ Reasoning"
+                expanded = "  ▾ Reasoning"
+                self.assertEqual(initial.count(collapsed), 2)
+                self.assertEqual(initial[initial.index("› First prompt") + 1], collapsed)
+                self.assertEqual(initial[initial.index("› Second prompt") + 1], collapsed)
+                self.assertNotIn("  │ First step", initial)
+                self.assertIn("  └ 12:00", initial)
+
+                terminal.send_text("\x14\t")
+                await wait_until(lambda: f"› {collapsed.strip()}" in visible())
+                self.assertIn("Tab/Shift+Tab", tui._footer_hints())
+                terminal.send_text("\r")
+                await wait_until(lambda: "  │ Second step" in lines())
+                self.assertIn(f"› {expanded.strip()}", visible())
+                self.assertIn("  │ First step", lines())
+                self.assertNotIn("  │ Next prompt's thinking", lines())
+
+                terminal.send_text("\t\r")
+                await wait_until(lambda: "  │ Next prompt's thinking" in lines())
+                self.assertIn(f"› {expanded.strip()}", visible())
+                self.assertIn("  │ First step", lines())
+
+                terminal.send_bytes(b"\x1b[Z\r")
+                await wait_until(lambda: "  │ First step" not in lines())
+                self.assertIn(f"› {collapsed.strip()}", visible())
+                self.assertIn("  │ Next prompt's thinking", lines())
+                terminal.send_text("q")
+                await wait_until(lambda: not tui._in_pager)
+                await wait_until(lambda: collapsed in lines())
+                self.assertTrue(tui.app.layout.has_focus(tui._composer))
+
+                terminal.send_text("/clear\r")
+                await wait_until(lambda: "Started a new conversation." in "\n".join(lines()))
+                self.assertNotIn("  │ Next prompt's thinking", lines())
+                self.assertNotIn(collapsed, lines())
+                self.assertNotIn(expanded, lines())
+                terminal.send_text("/exit\r")
+                await asyncio.wait_for(app, timeout=2)
+            finally:
+                if not app.done():
+                    app.cancel()
+                    await asyncio.gather(app, return_exceptions=True)
+
     async def test_clear_removes_transcript_and_starts_new_conversation(self):
         old_agent = SimpleNamespace(messages=[{"role": "user", "content": []}])
         new_agent = SimpleNamespace(messages=[])

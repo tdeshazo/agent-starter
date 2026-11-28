@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from ..conversation import Conversation, InvocationError
 from ..preferences import PET_NAMES, UserPreferences
-from .commands import command_output, parse_slash_command
+from .commands import command_output, parse_slash_command, reasoning_command
 from .session import session_info
 from .terminal import use_color, write_rows
 from .transcript import Transcript
@@ -49,6 +49,8 @@ def run_plain(
                     transcript.error(str(error))
                 else:
                     transcript.info("Started a new conversation.")
+            elif cmd.name == "/reasoning":
+                transcript.info(reasoning_command(cmd, conversation))
             elif cmd.name == "/pet":
                 if cmd.arg is None:
                     choices = ", ".join(PET_NAMES)

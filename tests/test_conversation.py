@@ -8,6 +8,7 @@ from pathlib import Path
 from simple_agent.conversation import Conversation, InvocationError, TextDelta
 from simple_agent.preferences import UserPreferences
 from simple_agent.tools.workspace_text import search_rows, select_lines
+from simple_agent.tui.commands import SlashCommand, matching_commands, parse_slash_command
 
 
 class ConversationTests(unittest.TestCase):
@@ -18,6 +19,9 @@ class ConversationTests(unittest.TestCase):
 
             def apply(self, preferences):
                 self.preferences = preferences
+
+            def set_reasoning(self, enabled):
+                self.reasoning_enabled = enabled
 
             def observe(self, emit):
                 self.emit = emit
@@ -41,10 +45,14 @@ class ConversationTests(unittest.TestCase):
         events = []
         conversation.observe(events.append)
 
+        self.assertFalse(original.reasoning_enabled)
         conversation.invoke("first")
+        conversation.set_reasoning(True)
+        self.assertTrue(original.reasoning_enabled)
         with self.assertRaises(InvocationError):
             conversation.invoke("failed")
         self.assertEqual(original.history, ["first"])
+        self.assertTrue(conversation.reasoning_enabled)
 
         conversation.update_preferences("  Scout  ", "")
         self.assertEqual(original.history, ["first"])
@@ -54,8 +62,34 @@ class ConversationTests(unittest.TestCase):
         conversation.reset()
         conversation.invoke("next")
         self.assertEqual(fresh.preferences, original.preferences)
+        self.assertTrue(fresh.reasoning_enabled)
         self.assertEqual(fresh.history, ["next"])
         self.assertEqual(events, [TextDelta("first"), TextDelta("next")])
+        self.assertNotIn("reasoning_enabled", data)
+
+
+class ReasoningCommandTests(unittest.TestCase):
+    def test_status_and_explicit_options_parse_in_both_interfaces(self):
+        for interactive in (True, False):
+            for arg in (None, "on", "off"):
+                prompt = f"/reasoning {arg}" if arg else "/reasoning"
+                with self.subTest(interactive=interactive, prompt=prompt):
+                    self.assertEqual(
+                        parse_slash_command(prompt, interactive=interactive),
+                        SlashCommand("/reasoning", arg),
+                    )
+            for arg in ("of", "maybe", "on off"):
+                with self.subTest(interactive=interactive, arg=arg):
+                    command = parse_slash_command(f"/reasoning {arg}", interactive=interactive)
+                    self.assertEqual(
+                        command, SlashCommand("/reasoning", error="Usage: /reasoning [on|off]"),
+                    )
+
+    def test_completes_the_command_and_its_options(self):
+        self.assertIn("/reasoning", matching_commands("/"))
+        self.assertEqual(matching_commands("/rea"), ["/reasoning"])
+        self.assertEqual(matching_commands("/reasoning "), ["/reasoning on", "/reasoning off"])
+        self.assertEqual(matching_commands("/reasoning of"), ["/reasoning off"])
 
 
 class WorkspaceTextTests(unittest.TestCase):

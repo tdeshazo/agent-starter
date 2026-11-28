@@ -17,9 +17,10 @@ from .workspace_text import (
 
 @tool
 def read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
-    """Read a local UTF-8 text file or inclusive line range in the working directory.
+    """Read a known UTF-8 text file or inclusive line range in the working directory.
 
     The return value is raw text up to 4 KiB. Line ranges support files up to 1 MiB.
+    To read a single line, set both start_line and end_line to that line number.
 
     Args:
         path: Path inside the current working directory (relative or absolute).
@@ -35,7 +36,9 @@ def read_file(path: str, start_line: int | None = None, end_line: int | None = N
 def search_text(query: str) -> str:
     """Find case-sensitive literal text in UTF-8 files under the working directory.
 
+    Use this tool to locate a workspace file or line from literal text.
     Returns up to 20 matches as relative path, line number, and a snippet.
+    Cite the path and line number when answering from a match.
     An incomplete notice indicates a scan or output limit or files that could not be read.
 
     Args:

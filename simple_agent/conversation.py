@@ -57,6 +57,7 @@ class InvocationError(Exception):
 
 class ConversationBackend(Protocol):
     def apply(self, preferences: AgentPreferences) -> None: ...
+    def set_reasoning(self, enabled: bool) -> None: ...
     def observe(self, emit: Callable[[ConversationEvent], None]) -> None: ...
     def details(self) -> SessionDetails: ...
     def tools(self) -> list[ToolSpec]: ...
@@ -78,11 +79,13 @@ class Conversation:
         self._backend_factory = backend_factory
         self._preferences = preferences
         self._observer: Callable[[ConversationEvent], None] | None = None
+        self._reasoning_enabled = False
         backend = initial_backend if initial_backend is not None else backend_factory()
         self._backend = self._prepare(backend)
 
     def _prepare(self, backend: ConversationBackend) -> ConversationBackend:
         backend.apply(self._preferences.agent())
+        backend.set_reasoning(self._reasoning_enabled)
         if self._observer is not None:
             backend.observe(self._observer)
         return backend
@@ -93,6 +96,14 @@ class Conversation:
 
     def reset(self) -> None:
         self._backend = self._prepare(self._backend_factory())
+
+    @property
+    def reasoning_enabled(self) -> bool:
+        return self._reasoning_enabled
+
+    def set_reasoning(self, enabled: bool) -> None:
+        self._backend.set_reasoning(enabled)
+        self._reasoning_enabled = enabled
 
     def update_preferences(self, name: str, prompt: str) -> None:
         self._backend.apply(self._preferences.save_agent(name, prompt))

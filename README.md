@@ -4,21 +4,86 @@ A Python starter with an interactive CLI, tools for time, workspace search and f
 and a local OpenAI-compatible llama.cpp server. Strands owns the agent/tool loop.
 No cloud API key is needed. Text only; no audio/vision projector is loaded.
 
-## Run
+## Install
 
-Requires Python 3.12+ and uv. The default profile also requires Vulkan drivers
-and access to `/dev/dri`.
-By default, reuses these existing assets from `~/Workspace/dictation`:
-
-- `.local/runtime/llama-b12246/llama-server`
-- `.local/models/gemma-4-E4B-it-Q4_0.gguf`
+From the checkout, install the project dependencies with Python 3.12+ and uv.
 
 ```sh
 uv sync --locked
+```
+
+## Your first customization — no model server required
+
+Start a Python session with `uv run python`. Paste these lines to create two
+agents and inspect the tools each one can call.
+
+```python
+from simple_agent import create_agent
+from simple_agent.tools import current_time
+
+planner = create_agent(system_prompt="Help me plan lessons.", tools=())
+clock = create_agent(system_prompt="Use the clock for time questions.", tools=(current_time,))
+print(planner.tool_names)  # []
+print(clock.tool_names)    # ['current_time']
+```
+
+The prompt gives each agent its instructions. The `tools` argument selects its
+capabilities. Calling `create_agent()` uses the starter prompt and all three
+built-in tools. Each agent has its own conversation history.
+
+In the same session, try calling the calculator tool directly. Change the
+expression and run it again to see how the tool behaves.
+
+```python
+from examples.calculator.agent import calculate
+
+print(calculate("37 * 19"))  # 703
+```
+
+Enter `exit()` to return to your shell. The next step runs the same calculation
+through the model so you can see when it calls the tool.
+
+## Run
+
+### Self-host the model
+
+From the repository root, create the local runtime and model directories.
+Download the llama.cpp release archive for your OS and architecture, then
+extract its server executable **and accompanying libraries** into
+`.local/runtime/` so that `.local/runtime/llama-server` is executable.
+The launcher has been tested with [llama.cpp b12246](https://github.com/ggml-org/llama.cpp/releases/tag/b12246).
+If you already installed the server, set `AGENT_LLAMA_BIN` to its executable path.
+
+```sh
+mkdir -p .local/runtime .local/models
+```
+
+For a CPU-only first run, download the E2B text model (about 2.84 GB) and
+launch the CPU profile. The server listens on loopback and can run offline
+after setup. The runtime and weights are ignored by Git. [E2B model files](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/tree/main)
+
+```sh
+uvx --from huggingface_hub hf download ggml-org/gemma-4-E2B-it-GGUF gemma-4-E2B-it-Q4_0.gguf --local-dir .local/models
+uv run python scripts/run_model.py --profile uhd620-cpu
+```
+
+For the default Vulkan profile, use a Vulkan-enabled runtime, drivers and
+access to `/dev/dri` on Linux. Download the E4B model (about 4.59 GB) and start
+the server. [E4B model files](https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/tree/main)
+
+```sh
+uvx --from huggingface_hub hf download ggml-org/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q4_0.gguf --local-dir .local/models
 uv run python scripts/run_model.py
 ```
 
 In another terminal, wait for `curl -f http://127.0.0.1:8088/health` to succeed:
+
+```sh
+uv run python -m examples.calculator 'Use calculate to multiply 37 by 19.'
+```
+
+Look for `Tool #1: calculate` followed by an answer containing `703`.
+To try the starter's built-in tools or open its interactive CLI, run one of these commands.
 
 ```sh
 uv run python main.py 'Use current_time to tell me the time in America/New_York.'
@@ -33,9 +98,8 @@ and Ctrl-T to open the dedicated transcript view (`↑`/`↓` or `j`/`k`, Home/E
 and `q` or Esc to return), plus Alt+Enter for a newline and Esc to stop a
 response. Scrolling up pauses auto-follow so live responses do not jump the
 viewport. Type `/` to see commands, including `/clear`, `/exit`, `/pet`,
-`/settings`, `/tools`, and `/status`. Piped input uses a line-oriented
-interface. Stop the server with Ctrl-C in its terminal. Avoid running dictation
-inference simultaneously if GPU memory is limited.
+`/reasoning`, `/settings`, `/tools`, and `/status`. Piped input uses a line-oriented
+interface. Stop the server with Ctrl-C in its terminal. Stop other inference workloads if GPU memory is limited.
 
 Use `/clear` to start a new conversation and clear the full-screen transcript.
 
@@ -44,6 +108,21 @@ prompt. Use Tab to switch fields, Enter for a newline in the prompt, Ctrl-S to
 save, or Esc to cancel. An empty system prompt disables it. Saved settings apply
 to the next response and persist across launches, including one-shot and piped
 use. Saving keeps the current conversation.
+
+### Model reasoning
+
+Use `/reasoning on` or `/reasoning off` to change how the model handles the
+next prompt. Use `/reasoning` to check the current setting. Each session starts
+with reasoning off, and changing it keeps the current conversation.
+
+When the model sends reasoning, click `▸ Reasoning` below that prompt to reveal
+it in an indented block. Click `▾ Reasoning` to collapse it again. In the Ctrl-T
+transcript view, use Tab or Shift-Tab to move between reasoning controls and
+Enter to toggle the focused one. The line-oriented interface prints reasoning
+as a labeled, indented block.
+
+Restart any local model server that was launched before this change to enable
+per-request reasoning controls.
 
 ### Markdown appearance and copying
 
@@ -78,8 +157,7 @@ or Option-drag in some macOS terminals) and its usual copy shortcut.
 
 ## Hardware settings
 
-Port 8088 keeps this server separate from dictation's 8087. Defaults are taken
-from dictation's `app/engine.py` and its documented configuration F:
+The default Vulkan profile uses these settings:
 
 | Setting | Default | Override |
 | --- | --- | --- |
@@ -91,14 +169,12 @@ from dictation's `app/engine.py` and its documented configuration F:
 | Context tokens | 8192 | `AGENT_CONTEXT_SIZE` |
 | Server port | 8088 | `AGENT_PORT` |
 
-One inference slot, disabled reasoning, disabled request logs and no context shift
-match dictation. Jinja enables the model's tool-call chat template. Requests also
-explicitly disable thinking and enable prompt caching. These are inherited tuning
-choices, not new performance measurements. The default profile requires a Vulkan
-device and does not silently fall back to CPU.
+The launcher uses one inference slot, disables request logs, and disables
+context shift. Jinja enables the model's tool-call chat template. Requests enable
+prompt caching and set thinking according to the session's `/reasoning` setting.
+The default profile requires a Vulkan device.
 
-Export overrides in the shell (no automatic `.env` loading). `DICTATION_ROOT`,
-`AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. `AGENT_PORT`
+Export overrides in the shell (no automatic `.env` loading). `AGENT_LLAMA_BIN`, and `AGENT_MODEL` override asset locations. `AGENT_PORT`
 updates both the server launcher and default client URL. An empty value uses
 the default port. Set `AGENT_BASE_URL` to point the client at another host or endpoint.
 `python scripts/run_model.py --dry-run` prints the launch command without loading
@@ -133,12 +209,27 @@ Add `--dry-run` to inspect a profile before launching it.
 
 ## Extend
 
+To adapt the [calculator example](examples/calculator/agent.py), start with
+`create_calculator_agent()` at the bottom of the file. This is where you pair
+your own prompt with a tuple of tools.
+
+Run its tool tests locally, then use the smoke check with the model server running
+to verify the tool call, its result, and the final answer.
+
+```sh
+uv run python -m unittest discover -s tests -p test_calculator_example.py -v
+uv run python -m examples.calculator.smoke
+```
+
+For a prompt beginning with a minus sign, use the argument separator, as in
+`uv run python -m examples.calculator -- '-2+3'`.
+
 Agent setup lives in the `simple_agent` package:
 
 - `agent.py`: `create_agent()` wires the model, prompt, and tools together.
 - `prompts.py`: defines the built-in `SYSTEM_PROMPT`.
-- `simple_agent/tools/`: add a module with an `@tool`-decorated function and
-  register it in `DEFAULT_TOOLS` in the package's `__init__.py`. The built-in
+- `simple_agent/tools/` holds the built-in tools. To change which tools every
+  default agent gets, edit `DEFAULT_TOOLS` in the package's `__init__.py`. The built-in
   clock tool lives in `clock.py` and the workspace tools live in `workspace.py`.
   Within the package, `workspace_files.py` owns filesystem access and
   `workspace_text.py` owns text selection and search formatting.

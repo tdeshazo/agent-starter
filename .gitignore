@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Locally provisioned inference runtime and weights
+/.local/
