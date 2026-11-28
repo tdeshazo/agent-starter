@@ -1,6 +1,6 @@
 """Manage conversation lifecycle independently of the model SDK and interface."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol
@@ -118,7 +118,7 @@ class Conversation:
         return self._backend.total_tokens()
 
     @contextmanager
-    def _turn(self) -> Iterator[ConversationBackend]:
+    def _turn(self) -> Generator[ConversationBackend, None, None]:
         backend = self._backend
         previous = backend.checkpoint()
         try:

@@ -1,7 +1,7 @@
 """Filesystem access and scan limits for local workspace tools."""
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import closing, contextmanager
 from io import BufferedReader
 from pathlib import Path
@@ -31,7 +31,7 @@ def _is_sensitive_path(rel_parts: tuple[str, ...]) -> bool:
 @contextmanager
 def _open_regular_file(
     parent_fd: int, name: str, path: str
-) -> Iterator[tuple[BufferedReader, os.stat_result]]:
+) -> Generator[tuple[BufferedReader, os.stat_result], None, None]:
     fd = os.open(name, FILE_FLAGS, dir_fd=parent_fd)
     try:
         info = os.fstat(fd)
@@ -46,7 +46,7 @@ def _open_regular_file(
 
 
 @contextmanager
-def _open_workspace_file(rel_parts: tuple[str, ...], path: str) -> Iterator[BufferedReader]:
+def _open_workspace_file(rel_parts: tuple[str, ...], path: str) -> Generator[BufferedReader, None, None]:
     parent_fd = os.open(".", DIRECTORY_LOOKUP_FLAGS)
     try:
         for name in rel_parts[:-1]:
